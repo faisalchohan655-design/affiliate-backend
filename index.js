@@ -33,11 +33,12 @@ const connectDB = async (retries = 5, delay = 3000) => {
 connectDB();
 
 // =============================================
-// 📝 MONGO SCHEMA
+// 📝 MONGO SCHEMA (Added: affiliate_link)
 // =============================================
 const campaignSchema = new mongoose.Schema({
   product_name: { type: String, required: true },
   country: { type: String, default: 'us' },
+  affiliate_link: { type: String, default: '' }, // ✅ NEW FIELD
   status: { type: String, default: 'pending' },
   google_article: String,
   twitter_thread: String,
@@ -83,7 +84,7 @@ async function callGroq(messages, model = 'llama-3.1-8b-instant') {
       'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    timeout: 60000, // 60 second timeout
+    timeout: 60000,
   });
 
   return response.data;
@@ -102,23 +103,21 @@ async function callGroqWithRetry(messages, model = 'llama-3.1-8b-instant', maxRe
 }
 
 // =============================================
-// 📥 STRING EXTRACTOR (Groq se object aaye toh handle kare)
+// 📥 STRING EXTRACTOR
 // =============================================
-function extractStringContent(value, fieldName) {
+function extractStringContent(value) {
   if (typeof value === 'string') return value;
   if (typeof value === 'object' && value !== null) {
-    // Agar object hai toh pehle content, article, ya body nikaalein
     if (value.content) return value.content;
     if (value.article) return value.article;
     if (value.body) return value.body;
-    // Agar kuch nahi mila toh poori object ko string bana dein
     return JSON.stringify(value);
   }
   return String(value || '');
 }
 
 // =============================================
-// ⚙️ THE MAIN AD-KILLER WORKER
+// ⚙️ THE MAIN AD-KILLER WORKER (WITH AFFILIATE LINK)
 // =============================================
 async function processCampaign(id) {
   try {
@@ -127,6 +126,7 @@ async function processCampaign(id) {
     if (!campaign) throw new Error('Campaign not found');
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
+    const affiliateLink = campaign.affiliate_link || '';
 
     // STEP 1: SERPAPI
     const serpRes = await axios.get('https://serpapi.com/search.json', {
@@ -150,48 +150,53 @@ async function processCampaign(id) {
     ]);
     const trendingHook = JSON.parse(hookResponse.choices[0].message.content).hook;
 
-    // STEP 3: MEGA CONTENT (Strict Prompt)
+    // STEP 3: MEGA CONTENT (With Affiliate Link Instruction)
     const aiResponse = await callGroqWithRetry([
       { role: 'system', content: `Return ONLY valid JSON with EXACT keys:
-        - "google_article": (MUST be a plain HTML string, NOT an object. Example: "<h1>Title</h1><p>Content...</p>")
-        - "twitter_thread": (MUST be a plain string, tweets separated by newline)
-        - "linkedin_post": (MUST be a plain string)
-        - "reddit_post": (MUST be a plain string)
-        - "reels_script": (MUST be a plain string)
-        - "meta_title": (plain string, max 60 chars)
-        - "meta_description": (plain string, max 160 chars)
-        All values must be strings, NOT objects.` },
+        - "google_article": (HTML string)
+        - "twitter_thread": (string)
+        - "linkedin_post": (string)
+        - "reddit_post": (string)
+        - "reels_script": (string)
+        - "meta_title": (string, max 60 chars)
+        - "meta_description": (string, max 160 chars)
+        All values must be strings.` },
       { role: 'user', content: `
         Product: ${campaign.product_name}
         Hook: "${trendingHook}"
         Competitor Data: ${snippets.substring(0, 3000)}
+        Affiliate Link (Embed this naturally in all formats): ${affiliateLink || 'No affiliate link provided'}
 
-        Generate:
-        1. google_article: 1200-word HTML article as a SINGLE STRING. Include <h2> "Why Ads Lie" and <h3> sections.
-        2. twitter_thread: 15 tweets as a SINGLE STRING (1/15 to 15/15).
-        3. linkedin_post: 300-word professional post as a SINGLE STRING.
-        4. reddit_post: "I tested ${campaign.product_name} for 30 days" as a SINGLE STRING.
-        5. reels_script: 60-second script (Scene 1-5) as a SINGLE STRING.
+        Instructions for the affiliate link:
+        - If a link is provided, embed it naturally in the google_article (as a clickable HTML link), in the twitter_thread (as a call-to-action), in linkedin_post, and in reels_script.
+        - Make it fit the context, e.g., "Grab your exclusive deal here [link]" or "Check out the official website [link]".
+        - If no link is provided, just use generic "visit official website" text.
+
+        Output Format:
+        1. google_article: 1200-word HTML article. Include <h2> "Why Ads Lie".
+        2. twitter_thread: 15 tweets (1/15 to 15/15).
+        3. linkedin_post: 300-word professional post.
+        4. reddit_post: "I tested ${campaign.product_name} for 30 days".
+        5. reels_script: 60-second script (Scene 1-5).
         6. meta_title: Under 60 chars.
         7. meta_description: Under 160 chars.
-
-        IMPORTANT: All 7 values MUST be strings. Do NOT use objects.` }
+      `}
     ], 'llama-3.1-8b-instant');
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // STEP 4: ✅ EXTRACT STRINGS (Agar object aaya toh handle kar lo)
+    // STEP 4: Extract Strings
     const finalData = {
-      google_article: extractStringContent(result.google_article, 'google_article'),
-      twitter_thread: extractStringContent(result.twitter_thread, 'twitter_thread'),
-      linkedin_post: extractStringContent(result.linkedin_post, 'linkedin_post'),
-      reddit_post: extractStringContent(result.reddit_post, 'reddit_post'),
-      reels_script: extractStringContent(result.reels_script, 'reels_script'),
-      meta_title: extractStringContent(result.meta_title, 'meta_title'),
-      meta_description: extractStringContent(result.meta_description, 'meta_description'),
+      google_article: extractStringContent(result.google_article),
+      twitter_thread: extractStringContent(result.twitter_thread),
+      linkedin_post: extractStringContent(result.linkedin_post),
+      reddit_post: extractStringContent(result.reddit_post),
+      reels_script: extractStringContent(result.reels_script),
+      meta_title: extractStringContent(result.meta_title),
+      meta_description: extractStringContent(result.meta_description),
     };
 
-    // STEP 5: Save to MongoDB
+    // STEP 5: Save
     await Campaign.findByIdAndUpdate(id, {
       google_article: finalData.google_article,
       twitter_thread: finalData.twitter_thread,
@@ -213,6 +218,8 @@ async function processCampaign(id) {
 🐦 <b>Twitter Start:</b>
 ${finalData.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
+🔗 <b>Affiliate Link:</b> ${affiliateLink || 'Not provided'}
+
 📥 Dashboard se download karein.
     `);
 
@@ -231,12 +238,13 @@ ${finalData.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 // 🌐 EXPRESS ROUTES
 // =============================================
 app.post('/api/start', async (req, res) => {
-  const { product, country } = req.body;
+  const { product, country, affiliateLink } = req.body; // ✅ Added affiliateLink
   if (!product) return res.status(400).json({ error: 'Product name required' });
   
   const newCampaign = new Campaign({
     product_name: product,
     country: country || 'us',
+    affiliate_link: affiliateLink || '', // ✅ Save to DB
     status: 'pending'
   });
   const saved = await newCampaign.save();
