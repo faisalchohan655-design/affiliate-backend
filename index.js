@@ -59,13 +59,13 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🔥 GROQ SETUP (FREE ALTERNATIVE)
+// 🔥 GROQ SETUP
 // =============================================
 const groq = new Groq({ 
   apiKey: process.env.GROQ_API_KEY 
 });
 
-// ========== TELEGRAM SETUP (Optional) ==========
+// ========== TELEGRAM SETUP ==========
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -81,7 +81,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ THE MAIN AD-KILLER WORKER (GROQ ENGINE)
+// ⚙️ THE MAIN AD-KILLER WORKER
 // =============================================
 async function processCampaign(id) {
   try {
@@ -91,7 +91,7 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // STEP 1: SERPAPI - Real Data Fetch
+    // STEP 1: SERPAPI
     const serpRes = await axios.get('https://serpapi.com/search.json', {
       params: {
         q: `best ${campaign.product_name} review 2026`,
@@ -106,38 +106,38 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: TRENDING HOOK ✅ FIXED MODEL
+    // STEP 2: TRENDING HOOK ✅ NEW MODEL
     const hookCompletion = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: 'Return ONLY valid JSON. Example: {"hook": "Your hook here"}' },
         { role: 'user', content: `Based on these Google queries: ${JSON.stringify(peopleAlsoAsk)}. What is the single biggest complaint or question about ${campaign.product_name} right now? Write a 1-line aggressive hook that beats ads.` }
       ],
-      model: 'mixtral-8x7b-32768', // ✅ YEH NAYA MODEL HAI (Purana wala band ho gaya)
+      model: 'llama-3.3-70b-versatile', // ✅ CURRENT PRODUCTION MODEL
       response_format: { type: "json_object" },
       temperature: 0.7
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
-    // STEP 3: MEGA CONTENT ✅ FIXED MODEL
+    // STEP 3: MEGA CONTENT ✅ NEW MODEL
     const aiResponse = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: 'Return ONLY valid JSON with these exact keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
         { role: 'user', content: `
           Product: ${campaign.product_name}
           Trending Hook: "${trendingHook}"
-          Competitor Snippets (what others are saying): ${snippets}
+          Competitor Snippets: ${snippets}
 
-          Instructions for each key:
-          1. google_article: Write a 2000-word detailed review in HTML format. Add <h2> "Why Ads Won't Tell You About ${campaign.product_name}". Include a comparison table and FAQ.
-          2. twitter_thread: Write 20 tweets (numbered 1/20 to 20/20). Start with the trending hook. Use emojis.
-          3. linkedin_post: Write a 400-word professional breakdown. Focus on ROI and hidden costs.
-          4. reddit_post: Write a neutral, unbiased "I tested ${campaign.product_name} for 30 days" review. Add a disclaimer.
-          5. reels_script: Write a 60-second Instagram Reel/TikTok script. Scene 1 to Scene 5. Add text overlays and CTA.
-          6. meta_title: Under 60 characters.
-          7. meta_description: Under 160 characters. Include a secret discount tip.
+          Instructions:
+          1. google_article: 2000 words HTML. Add <h2> "Why Ads Won't Tell You About ${campaign.product_name}".
+          2. twitter_thread: 20 tweets (1/20 to 20/20). Start with the hook.
+          3. linkedin_post: 400 words professional style.
+          4. reddit_post: "I tested ${campaign.product_name} for 30 days" - unbiased.
+          5. reels_script: 60-second Instagram Reel script. Scene 1 to 5.
+          6. meta_title: Under 60 chars.
+          7. meta_description: Under 160 chars.
         `}
       ],
-      model: 'mixtral-8x7b-32768', // ✅ YEH NAYA MODEL HAI
+      model: 'llama-3.3-70b-versatile', // ✅ CURRENT PRODUCTION MODEL
       response_format: { type: "json_object" },
       temperature: 0.8
     });
@@ -157,7 +157,7 @@ async function processCampaign(id) {
       status: 'completed'
     });
 
-    // STEP 5: Send to Mobile (Telegram)
+    // STEP 5: Telegram
     await sendToMobile(`
 🚀 <b>${campaign.product_name}</b> is READY!
 
