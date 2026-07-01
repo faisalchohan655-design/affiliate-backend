@@ -1,7 +1,7 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import axios from 'axios';
-import OpenAI from 'openai';
+import Groq from 'groq-sdk';
 import cors from 'cors';
 
 const app = express();
@@ -58,8 +58,14 @@ const campaignSchema = new mongoose.Schema({
 
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
-// ========== TELEGRAM & OPENAI SETUP ==========
-const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+// =============================================
+// 🔥 GROQ SETUP (100% FREE - OpenAI ka alternative)
+// =============================================
+const groq = new Groq({ 
+  apiKey: process.env.GROQ_API_KEY 
+});
+
+// ========== TELEGRAM SETUP (Optional) ==========
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
@@ -75,7 +81,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ THE MAIN AD-KILLER WORKER
+// ⚙️ THE MAIN AD-KILLER WORKER (GROQ ENGINE)
 // =============================================
 async function processCampaign(id) {
   try {
@@ -85,6 +91,7 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
+    // STEP 1: SERPAPI - Real Data Fetch
     const serpRes = await axios.get('https://serpapi.com/search.json', {
       params: {
         q: `best ${campaign.product_name} review 2026`,
@@ -99,43 +106,45 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // ✅ FIX 1: Model changed to gpt-4o-mini (10x cheaper)
-    const hookCompletion = await openai.chat.completions.create({
-      model: 'gpt-4o-mini', 
+    // STEP 2: TRENDING HOOK (Groq Llama 3)
+    const hookCompletion = await groq.chat.completions.create({
       messages: [
-        { role: 'system', content: 'Return ONLY JSON {"hook": "..."}' },
-        { role: 'user', content: `Based on these queries: ${JSON.stringify(peopleAlsoAsk)}. What is the single biggest complaint or question about ${campaign.product_name} right now? Write a 1-line aggressive hook.` }
+        { role: 'system', content: 'Return ONLY valid JSON. Example: {"hook": "Your hook here"}' },
+        { role: 'user', content: `Based on these Google queries: ${JSON.stringify(peopleAlsoAsk)}. What is the single biggest complaint or question about ${campaign.product_name} right now? Write a 1-line aggressive hook that beats ads.` }
       ],
-      response_format: { type: "json_object" }
+      model: 'llama3-70b-8192',
+      response_format: { type: "json_object" },
+      temperature: 0.7
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
-    // ✅ FIX 2: Model changed to gpt-4o-mini (10x cheaper)
-    const aiResponse = await openai.chat.completions.create({
-      model: 'gpt-4o-mini',
+    // STEP 3: MEGA CONTENT GENERATION (Groq Llama 3)
+    const aiResponse = await groq.chat.completions.create({
       messages: [
-        { role: 'system', content: 'Return ONLY valid JSON. Keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
+        { role: 'system', content: 'Return ONLY valid JSON with these exact keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
         { role: 'user', content: `
           Product: ${campaign.product_name}
           Trending Hook: "${trendingHook}"
-          Competitor Snippets: ${snippets}
+          Competitor Snippets (what others are saying): ${snippets}
 
-          Instructions:
-          1. google_article: 2000 words HTML. Add <h2> "Why Ads Won't Tell You About ${campaign.product_name}".
-          2. twitter_thread: 20 tweets (1/20 to 20/20). Start with the hook.
-          3. linkedin_post: 400 words professional style.
-          4. reddit_post: "I tested ${campaign.product_name} for 30 days" - totally unbiased.
-          5. reels_script: 60-second Instagram Reel script. Scene 1 to Scene 5. Add text overlays.
-          6. meta_title: Under 60 chars.
-          7. meta_description: Under 160 chars.
+          Instructions for each key:
+          1. google_article: Write a 2000-word detailed review in HTML format. Add <h2> "Why Ads Won't Tell You About ${campaign.product_name}". Include a comparison table and FAQ.
+          2. twitter_thread: Write 20 tweets (numbered 1/20 to 20/20). Start with the trending hook. Use emojis.
+          3. linkedin_post: Write a 400-word professional breakdown. Focus on ROI and hidden costs.
+          4. reddit_post: Write a neutral, unbiased "I tested ${campaign.product_name} for 30 days" review. Add a disclaimer.
+          5. reels_script: Write a 60-second Instagram Reel/TikTok script. Scene 1 to Scene 5. Add text overlays and CTA.
+          6. meta_title: Under 60 characters.
+          7. meta_description: Under 160 characters. Include a secret discount tip.
         `}
       ],
+      model: 'llama3-70b-8192',
       response_format: { type: "json_object" },
       temperature: 0.8
     });
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
+    // STEP 4: Save to MongoDB
     await Campaign.findByIdAndUpdate(id, {
       google_article: result.google_article,
       twitter_thread: result.twitter_thread,
@@ -148,37 +157,31 @@ async function processCampaign(id) {
       status: 'completed'
     });
 
+    // STEP 5: Send to Mobile (Telegram)
     await sendToMobile(`
-🚀 <b>${campaign.product_name}</b> Ready!
+🚀 <b>${campaign.product_name}</b> is READY!
 
-🔥 <b>Hook:</b> ${trendingHook}
+🔥 <b>Trending Hook:</b> ${trendingHook}
 
-🐦 <b>Twitter Start:</b>
+🐦 <b>Twitter Thread (First 3 tweets):</b>
 ${result.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
-📥 Download from Dashboard.
+📥 Download all 5 formats from your Vercel Dashboard.
     `);
 
     console.log(`✅ Campaign ${id} complete!`);
 
   } catch (error) {
     console.error('❌ Worker Error:', error);
-    
-    // Agar OpenAI quota error hai toh clear message bhejein
-    let errorMsg = error.message || 'Unknown error';
-    if (errorMsg.includes('insufficient_quota')) {
-      errorMsg = 'OpenAI API quota exhausted. Please add billing at platform.openai.com';
-    }
-    
     await Campaign.findByIdAndUpdate(id, { 
       status: 'failed', 
-      error_log: errorMsg 
+      error_log: error.message || 'Unknown error' 
     });
   }
 }
 
 // =============================================
-// 🌐 EXPRESS ROUTES
+// 🌐 EXPRESS API ROUTES
 // =============================================
 app.post('/api/start', async (req, res) => {
   const { product, country } = req.body;
@@ -219,4 +222,4 @@ app.get('/api/download/:id', async (req, res) => {
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Ad-Killer Backend running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 Ad-Killer (Groq) running on port ${PORT}`));
