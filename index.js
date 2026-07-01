@@ -1,7 +1,6 @@
 import express from 'express';
 import mongoose from 'mongoose';
 import axios from 'axios';
-import Groq from 'groq-sdk';
 import cors from 'cors';
 
 const app = express();
@@ -53,14 +52,6 @@ const campaignSchema = new mongoose.Schema({
 
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
-// =============================================
-// 🔥 GROQ SETUP (WITH TIMEOUT)
-// =============================================
-const groq = new Groq({
-  apiKey: process.env.GROQ_API_KEY,
-  timeout: 30000, // ✅ 30 second timeout
-});
-
 // ========== TELEGRAM SETUP ==========
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -77,22 +68,35 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// 🔄 RETRY FUNCTION (Groq ke liye)
+// 🚀 GROQ API CALL (Direct Axios - No SDK)
 // =============================================
-async function groqWithRetry(messages, model, maxRetries = 3) {
+async function callGroq(messages, model = 'llama-3.1-8b-instant') {
+  const url = 'https://api.groq.com/openai/v1/chat/completions';
+  
+  const response = await axios.post(url, {
+    messages: messages,
+    model: model,
+    response_format: { type: "json_object" },
+    temperature: 0.7,
+  }, {
+    headers: {
+      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+      'Content-Type': 'application/json',
+    },
+    timeout: 45000, // 45 second timeout
+  });
+
+  return response.data;
+}
+
+async function callGroqWithRetry(messages, model, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
-      const response = await groq.chat.completions.create({
-        messages: messages,
-        model: model,
-        response_format: { type: "json_object" },
-        temperature: 0.7,
-      });
-      return response;
+      return await callGroq(messages, model);
     } catch (error) {
-      console.log(`⚠️ Groq attempt ${i+1} failed. Retrying in 2s...`);
+      console.log(`⚠️ Groq attempt ${i+1} failed: ${error.message}`);
       if (i === maxRetries - 1) throw error;
-      await new Promise(res => setTimeout(res, 2000));
+      await new Promise(res => setTimeout(res, 3000));
     }
   }
 }
@@ -123,16 +127,15 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: TRENDING HOOK (With Retry)
-    const hookCompletion = await groqWithRetry([
-      { role: 'system', content: 'You are an SEO expert. Return ONLY valid JSON. {"hook": "..."}' },
+    // STEP 2: TRENDING HOOK
+    const hookResponse = await callGroqWithRetry([
+      { role: 'system', content: 'Return ONLY valid JSON. {"hook": "..."}' },
       { role: 'user', content: `Based on: ${JSON.stringify(peopleAlsoAsk)}. What is the biggest complaint about ${campaign.product_name}? Write a 1-line hook.` }
-    ], 'llama-3.3-70b-versatile');
-    
-    const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
+    ]);
+    const trendingHook = JSON.parse(hookResponse.choices[0].message.content).hook;
 
-    // STEP 3: MEGA CONTENT (With Retry) - SIZE KAM KIYA
-    const aiResponse = await groqWithRetry([
+    // STEP 3: MEGA CONTENT
+    const aiResponse = await callGroqWithRetry([
       { role: 'system', content: 'Return ONLY valid JSON. Keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
       { role: 'user', content: `
         Product: ${campaign.product_name}
@@ -148,7 +151,7 @@ async function processCampaign(id) {
         6. meta_title: Under 60 chars.
         7. meta_description: Under 160 chars.
       `}
-    ], 'llama-3.3-70b-versatile');
+    ]);
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
@@ -224,4 +227,4 @@ app.get('/api/download/:id', async (req, res) => {
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Ad-Killer (Groq) running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 Ad-Killer (Groq Axios) running on port ${PORT}`));
