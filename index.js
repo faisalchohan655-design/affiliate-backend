@@ -9,7 +9,7 @@ app.use(cors());
 app.use(express.json());
 
 // =============================================
-// 📦 MONGO DB CONNECTION (Bina warnings ke)
+// 📦 MONGO DB CONNECTION
 // =============================================
 const MONGO_URI = process.env.MONGO_URL || process.env.DATABASE_URL;
 
@@ -21,7 +21,6 @@ if (!MONGO_URI) {
 const connectDB = async (retries = 5, delay = 3000) => {
   for (let i = 0; i < retries; i++) {
     try {
-      // ✅ FIX: useNewUrlParser aur useUnifiedTopology hata diye
       await mongoose.connect(MONGO_URI, {
         serverSelectionTimeoutMS: 5000,
       });
@@ -100,8 +99,9 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
+    // ✅ FIX 1: Model changed to gpt-4o-mini (10x cheaper)
     const hookCompletion = await openai.chat.completions.create({
-      model: 'gpt-3.5-turbo',
+      model: 'gpt-4o-mini', 
       messages: [
         { role: 'system', content: 'Return ONLY JSON {"hook": "..."}' },
         { role: 'user', content: `Based on these queries: ${JSON.stringify(peopleAlsoAsk)}. What is the single biggest complaint or question about ${campaign.product_name} right now? Write a 1-line aggressive hook.` }
@@ -110,8 +110,9 @@ async function processCampaign(id) {
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
+    // ✅ FIX 2: Model changed to gpt-4o-mini (10x cheaper)
     const aiResponse = await openai.chat.completions.create({
-      model: 'gpt-4-turbo-preview',
+      model: 'gpt-4o-mini',
       messages: [
         { role: 'system', content: 'Return ONLY valid JSON. Keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
         { role: 'user', content: `
@@ -162,9 +163,16 @@ ${result.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
   } catch (error) {
     console.error('❌ Worker Error:', error);
+    
+    // Agar OpenAI quota error hai toh clear message bhejein
+    let errorMsg = error.message || 'Unknown error';
+    if (errorMsg.includes('insufficient_quota')) {
+      errorMsg = 'OpenAI API quota exhausted. Please add billing at platform.openai.com';
+    }
+    
     await Campaign.findByIdAndUpdate(id, { 
       status: 'failed', 
-      error_log: error.message || 'Unknown error' 
+      error_log: errorMsg 
     });
   }
 }
