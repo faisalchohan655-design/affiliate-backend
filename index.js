@@ -9,23 +9,20 @@ app.use(cors());
 app.use(express.json());
 
 // =============================================
-// 📦 MONGO DB CONNECTION (No ECONNREFUSED)
+// 📦 MONGO DB CONNECTION (Bina warnings ke)
 // =============================================
-const MONGO_URI = process.env.MONGO_URL || process.env.DATABASE_URL; // Railway MongoDB plugin se MONGO_URL aata hai
+const MONGO_URI = process.env.MONGO_URL || process.env.DATABASE_URL;
 
 if (!MONGO_URI) {
   console.error('❌ FATAL: MONGO_URL or DATABASE_URL is MISSING!');
-  console.error('👉 Please add MongoDB plugin in Railway or set MONGO_URL manually.');
   process.exit(1);
 }
 
-// Retry logic ke saath connect
 const connectDB = async (retries = 5, delay = 3000) => {
   for (let i = 0; i < retries; i++) {
     try {
+      // ✅ FIX: useNewUrlParser aur useUnifiedTopology hata diye
       await mongoose.connect(MONGO_URI, {
-        useNewUrlParser: true,
-        useUnifiedTopology: true,
         serverSelectionTimeoutMS: 5000,
       });
       console.log('✅ MongoDB Connected Successfully!');
@@ -43,12 +40,12 @@ const connectDB = async (retries = 5, delay = 3000) => {
 connectDB();
 
 // =============================================
-// 📝 MONGO SCHEMA (Clean & Simple)
+// 📝 MONGO SCHEMA
 // =============================================
 const campaignSchema = new mongoose.Schema({
   product_name: { type: String, required: true },
   country: { type: String, default: 'us' },
-  status: { type: String, default: 'pending' }, // pending, processing, completed, failed
+  status: { type: String, default: 'pending' },
   google_article: String,
   twitter_thread: String,
   linkedin_post: String,
@@ -58,11 +55,11 @@ const campaignSchema = new mongoose.Schema({
   meta_description: String,
   trending_hook: String,
   error_log: String,
-}, { timestamps: true }); // createdAt aur updatedAt auto add ho jayenge
+}, { timestamps: true });
 
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
-// ========== TELEGRAM SETUP (Optional) ==========
+// ========== TELEGRAM & OPENAI SETUP ==========
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
@@ -83,14 +80,12 @@ async function sendToMobile(text) {
 // =============================================
 async function processCampaign(id) {
   try {
-    // Status update
     await Campaign.findByIdAndUpdate(id, { status: 'processing' });
     const campaign = await Campaign.findById(id);
     if (!campaign) throw new Error('Campaign not found');
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // STEP 1: SERPAPI Fetch
     const serpRes = await axios.get('https://serpapi.com/search.json', {
       params: {
         q: `best ${campaign.product_name} review 2026`,
@@ -105,7 +100,6 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: AI - Trending Hook
     const hookCompletion = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -116,7 +110,6 @@ async function processCampaign(id) {
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
-    // STEP 3: AI - Mega Content Generate
     const aiResponse = await openai.chat.completions.create({
       model: 'gpt-4-turbo-preview',
       messages: [
@@ -142,7 +135,6 @@ async function processCampaign(id) {
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // STEP 4: MongoDB mein Save (Bohat easy)
     await Campaign.findByIdAndUpdate(id, {
       google_article: result.google_article,
       twitter_thread: result.twitter_thread,
@@ -155,7 +147,6 @@ async function processCampaign(id) {
       status: 'completed'
     });
 
-    // STEP 5: Telegram Notification
     await sendToMobile(`
 🚀 <b>${campaign.product_name}</b> Ready!
 
@@ -192,7 +183,6 @@ app.post('/api/start', async (req, res) => {
   });
   const saved = await newCampaign.save();
   
-  // Background mein process karein
   processCampaign(saved._id).catch(console.error);
   
   res.json({ success: true, id: saved._id, message: 'Started! Check dashboard in 2 mins.' });
