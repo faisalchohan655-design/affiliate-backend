@@ -59,7 +59,7 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🔥 GROQ SETUP (100% FREE - OpenAI ka alternative)
+// 🔥 GROQ SETUP (FREE ALTERNATIVE)
 // =============================================
 const groq = new Groq({ 
   apiKey: process.env.GROQ_API_KEY 
@@ -106,19 +106,19 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: TRENDING HOOK (Groq Llama 3)
+    // STEP 2: TRENDING HOOK ✅ FIXED MODEL
     const hookCompletion = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: 'Return ONLY valid JSON. Example: {"hook": "Your hook here"}' },
         { role: 'user', content: `Based on these Google queries: ${JSON.stringify(peopleAlsoAsk)}. What is the single biggest complaint or question about ${campaign.product_name} right now? Write a 1-line aggressive hook that beats ads.` }
       ],
-      model: 'llama3-70b-8192',
+      model: 'mixtral-8x7b-32768', // ✅ YEH NAYA MODEL HAI (Purana wala band ho gaya)
       response_format: { type: "json_object" },
       temperature: 0.7
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
-    // STEP 3: MEGA CONTENT GENERATION (Groq Llama 3)
+    // STEP 3: MEGA CONTENT ✅ FIXED MODEL
     const aiResponse = await groq.chat.completions.create({
       messages: [
         { role: 'system', content: 'Return ONLY valid JSON with these exact keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
@@ -137,7 +137,7 @@ async function processCampaign(id) {
           7. meta_description: Under 160 characters. Include a secret discount tip.
         `}
       ],
-      model: 'llama3-70b-8192',
+      model: 'mixtral-8x7b-32768', // ✅ YEH NAYA MODEL HAI
       response_format: { type: "json_object" },
       temperature: 0.8
     });
