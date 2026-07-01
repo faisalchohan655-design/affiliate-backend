@@ -1,6 +1,5 @@
 import express from 'express';
-import pkg from 'pg';
-const { Pool } = pkg;
+import mongoose from 'mongoose';
 import axios from 'axios';
 import OpenAI from 'openai';
 import cors from 'cors';
@@ -10,31 +9,64 @@ app.use(cors());
 app.use(express.json());
 
 // =============================================
-// 🚨 FIX 1: Database URL Check (Crash se bachayega)
+// 📦 MONGO DB CONNECTION (No ECONNREFUSED)
 // =============================================
-const DATABASE_URL = process.env.DATABASE_URL;
-if (!DATABASE_URL) {
-  console.error('❌ FATAL ERROR: DATABASE_URL environment variable is MISSING!');
-  console.error('👉 Please add PostgreSQL plugin in Railway or set DATABASE_URL manually.');
-  process.exit(1); // Crash intentionally taki Railway logs mein clear dikhe
+const MONGO_URI = process.env.MONGO_URL || process.env.DATABASE_URL; // Railway MongoDB plugin se MONGO_URL aata hai
+
+if (!MONGO_URI) {
+  console.error('❌ FATAL: MONGO_URL or DATABASE_URL is MISSING!');
+  console.error('👉 Please add MongoDB plugin in Railway or set MONGO_URL manually.');
+  process.exit(1);
 }
 
-// =============================================
-// 🚨 FIX 2: Pool with Retry & SSL
-// =============================================
-const pool = new Pool({
-  connectionString: DATABASE_URL,
-  ssl: { rejectUnauthorized: false },
-  connectionTimeoutMillis: 5000,
-  max: 5
-});
+// Retry logic ke saath connect
+const connectDB = async (retries = 5, delay = 3000) => {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await mongoose.connect(MONGO_URI, {
+        useNewUrlParser: true,
+        useUnifiedTopology: true,
+        serverSelectionTimeoutMS: 5000,
+      });
+      console.log('✅ MongoDB Connected Successfully!');
+      return;
+    } catch (err) {
+      console.log(`⚠️ DB attempt ${i+1} failed. Retrying in ${delay/1000}s...`);
+      if (i < retries - 1) await new Promise(res => setTimeout(res, delay));
+      else {
+        console.error('❌ All DB attempts failed:', err.message);
+        process.exit(1);
+      }
+    }
+  }
+};
+connectDB();
 
-// ========== OPENAI & TELEGRAM SETUP ==========
+// =============================================
+// 📝 MONGO SCHEMA (Clean & Simple)
+// =============================================
+const campaignSchema = new mongoose.Schema({
+  product_name: { type: String, required: true },
+  country: { type: String, default: 'us' },
+  status: { type: String, default: 'pending' }, // pending, processing, completed, failed
+  google_article: String,
+  twitter_thread: String,
+  linkedin_post: String,
+  reddit_post: String,
+  reels_script: String,
+  meta_title: String,
+  meta_description: String,
+  trending_hook: String,
+  error_log: String,
+}, { timestamps: true }); // createdAt aur updatedAt auto add ho jayenge
+
+const Campaign = mongoose.model('Campaign', campaignSchema);
+
+// ========== TELEGRAM SETUP (Optional) ==========
 const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// ========== TELEGRAM SENDER ==========
 async function sendToMobile(text) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
   try {
@@ -47,55 +79,18 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// 🚨 FIX 3: Database Init with RETRY (3 attempts)
+// ⚙️ THE MAIN AD-KILLER WORKER
 // =============================================
-async function initDB(retries = 3, delay = 2000) {
-  for (let i = 0; i < retries; i++) {
-    try {
-      await pool.query(`
-        CREATE TABLE IF NOT EXISTS campaigns (
-          id SERIAL PRIMARY KEY,
-          product_name TEXT NOT NULL,
-          country TEXT DEFAULT 'us',
-          status TEXT DEFAULT 'pending',
-          google_article TEXT,
-          twitter_thread TEXT,
-          linkedin_post TEXT,
-          reddit_post TEXT,
-          reels_script TEXT,
-          meta_title TEXT,
-          meta_description TEXT,
-          trending_hook TEXT,
-          error_log TEXT,
-          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        );
-      `);
-      console.log('✅ Database Table Ready');
-      return;
-    } catch (err) {
-      console.log(`⚠️ DB Connection attempt ${i + 1} failed. Retrying in ${delay/1000}s...`);
-      if (i < retries - 1) {
-        await new Promise(resolve => setTimeout(resolve, delay));
-      } else {
-        console.error('❌ All DB connection attempts failed:', err.message);
-        process.exit(1);
-      }
-    }
-  }
-}
-initDB();
-
-// ========== THE MAIN AD-KILLER WORKER ==========
 async function processCampaign(id) {
   try {
-    await pool.query('UPDATE campaigns SET status = $1 WHERE id = $2', ['processing', id]);
-    const { rows } = await pool.query('SELECT * FROM campaigns WHERE id = $1', [id]);
-    const campaign = rows[0];
+    // Status update
+    await Campaign.findByIdAndUpdate(id, { status: 'processing' });
+    const campaign = await Campaign.findById(id);
     if (!campaign) throw new Error('Campaign not found');
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // STEP 1: SERPAPI
+    // STEP 1: SERPAPI Fetch
     const serpRes = await axios.get('https://serpapi.com/search.json', {
       params: {
         q: `best ${campaign.product_name} review 2026`,
@@ -110,7 +105,7 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: Trending Hook
+    // STEP 2: AI - Trending Hook
     const hookCompletion = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -121,7 +116,7 @@ async function processCampaign(id) {
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
-    // STEP 3: AI Content Generation
+    // STEP 3: AI - Mega Content Generate
     const aiResponse = await openai.chat.completions.create({
       model: 'gpt-4-turbo-preview',
       messages: [
@@ -147,18 +142,18 @@ async function processCampaign(id) {
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // STEP 4: Save to Database
-    await pool.query(`
-      UPDATE campaigns SET
-        google_article = $1, twitter_thread = $2, linkedin_post = $3,
-        reddit_post = $4, reels_script = $5, meta_title = $6,
-        meta_description = $7, trending_hook = $8, status = 'completed'
-      WHERE id = $9
-    `, [
-      result.google_article, result.twitter_thread, result.linkedin_post,
-      result.reddit_post, result.reels_script, result.meta_title,
-      result.meta_description, trendingHook, id
-    ]);
+    // STEP 4: MongoDB mein Save (Bohat easy)
+    await Campaign.findByIdAndUpdate(id, {
+      google_article: result.google_article,
+      twitter_thread: result.twitter_thread,
+      linkedin_post: result.linkedin_post,
+      reddit_post: result.reddit_post,
+      reels_script: result.reels_script,
+      meta_title: result.meta_title,
+      meta_description: result.meta_description,
+      trending_hook: trendingHook,
+      status: 'completed'
+    });
 
     // STEP 5: Telegram Notification
     await sendToMobile(`
@@ -169,43 +164,58 @@ async function processCampaign(id) {
 🐦 <b>Twitter Start:</b>
 ${result.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
-📥 Download full content from Dashboard.
+📥 Download from Dashboard.
     `);
 
     console.log(`✅ Campaign ${id} complete!`);
 
   } catch (error) {
     console.error('❌ Worker Error:', error);
-    await pool.query('UPDATE campaigns SET status = $1, error_log = $2 WHERE id = $3', 
-      ['failed', error.message || 'Unknown error', id]);
+    await Campaign.findByIdAndUpdate(id, { 
+      status: 'failed', 
+      error_log: error.message || 'Unknown error' 
+    });
   }
 }
 
-// ========== EXPRESS ROUTES ==========
+// =============================================
+// 🌐 EXPRESS ROUTES
+// =============================================
 app.post('/api/start', async (req, res) => {
   const { product, country } = req.body;
   if (!product) return res.status(400).json({ error: 'Product name required' });
   
-  const { rows } = await pool.query(
-    'INSERT INTO campaigns (product_name, country) VALUES ($1, $2) RETURNING id',
-    [product, country || 'us']
-  );
-  const id = rows[0].id;
+  const newCampaign = new Campaign({
+    product_name: product,
+    country: country || 'us',
+    status: 'pending'
+  });
+  const saved = await newCampaign.save();
   
-  processCampaign(id).catch(console.error);
-  res.json({ success: true, id, message: 'Started. Check Dashboard in 2 mins!' });
+  // Background mein process karein
+  processCampaign(saved._id).catch(console.error);
+  
+  res.json({ success: true, id: saved._id, message: 'Started! Check dashboard in 2 mins.' });
 });
 
 app.get('/api/status/:id', async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
-  if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  try {
+    const data = await Campaign.findById(req.params.id);
+    if (!data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/api/download/:id', async (req, res) => {
-  const { rows } = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
-  if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
-  res.json(rows[0]);
+  try {
+    const data = await Campaign.findById(req.params.id);
+    if (!data) return res.status(404).json({ error: 'Not found' });
+    res.json(data);
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
 });
 
 app.get('/health', (req, res) => res.send('OK'));
