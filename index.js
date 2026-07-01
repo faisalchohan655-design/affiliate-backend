@@ -68,7 +68,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// 🚀 GROQ API CALL (Direct Axios - No SDK)
+// 🚀 GROQ API CALL (Direct Axios)
 // =============================================
 async function callGroq(messages, model = 'llama-3.1-8b-instant') {
   const url = 'https://api.groq.com/openai/v1/chat/completions';
@@ -83,13 +83,13 @@ async function callGroq(messages, model = 'llama-3.1-8b-instant') {
       'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
       'Content-Type': 'application/json',
     },
-    timeout: 45000, // 45 second timeout
+    timeout: 60000, // 60 second timeout
   });
 
   return response.data;
 }
 
-async function callGroqWithRetry(messages, model, maxRetries = 3) {
+async function callGroqWithRetry(messages, model = 'llama-3.1-8b-instant', maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try {
       return await callGroq(messages, model);
@@ -99,6 +99,22 @@ async function callGroqWithRetry(messages, model, maxRetries = 3) {
       await new Promise(res => setTimeout(res, 3000));
     }
   }
+}
+
+// =============================================
+// 📥 STRING EXTRACTOR (Groq se object aaye toh handle kare)
+// =============================================
+function extractStringContent(value, fieldName) {
+  if (typeof value === 'string') return value;
+  if (typeof value === 'object' && value !== null) {
+    // Agar object hai toh pehle content, article, ya body nikaalein
+    if (value.content) return value.content;
+    if (value.article) return value.article;
+    if (value.body) return value.body;
+    // Agar kuch nahi mila toh poori object ko string bana dein
+    return JSON.stringify(value);
+  }
+  return String(value || '');
 }
 
 // =============================================
@@ -134,48 +150,68 @@ async function processCampaign(id) {
     ]);
     const trendingHook = JSON.parse(hookResponse.choices[0].message.content).hook;
 
-    // STEP 3: MEGA CONTENT
+    // STEP 3: MEGA CONTENT (Strict Prompt)
     const aiResponse = await callGroqWithRetry([
-      { role: 'system', content: 'Return ONLY valid JSON. Keys: google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.' },
+      { role: 'system', content: `Return ONLY valid JSON with EXACT keys:
+        - "google_article": (MUST be a plain HTML string, NOT an object. Example: "<h1>Title</h1><p>Content...</p>")
+        - "twitter_thread": (MUST be a plain string, tweets separated by newline)
+        - "linkedin_post": (MUST be a plain string)
+        - "reddit_post": (MUST be a plain string)
+        - "reels_script": (MUST be a plain string)
+        - "meta_title": (plain string, max 60 chars)
+        - "meta_description": (plain string, max 160 chars)
+        All values must be strings, NOT objects.` },
       { role: 'user', content: `
         Product: ${campaign.product_name}
         Hook: "${trendingHook}"
-        Data: ${snippets}
+        Competitor Data: ${snippets.substring(0, 3000)}
 
-        Output:
-        1. google_article: 1200 words HTML. Add <h2> "Why Ads Lie".
-        2. twitter_thread: 15 tweets (1/15 to 15/15).
-        3. linkedin_post: 300 words professional.
-        4. reddit_post: "I tested ${campaign.product_name} for 30 days" - neutral.
-        5. reels_script: 60-second script (Scene 1-5).
+        Generate:
+        1. google_article: 1200-word HTML article as a SINGLE STRING. Include <h2> "Why Ads Lie" and <h3> sections.
+        2. twitter_thread: 15 tweets as a SINGLE STRING (1/15 to 15/15).
+        3. linkedin_post: 300-word professional post as a SINGLE STRING.
+        4. reddit_post: "I tested ${campaign.product_name} for 30 days" as a SINGLE STRING.
+        5. reels_script: 60-second script (Scene 1-5) as a SINGLE STRING.
         6. meta_title: Under 60 chars.
         7. meta_description: Under 160 chars.
-      `}
-    ]);
+
+        IMPORTANT: All 7 values MUST be strings. Do NOT use objects.` }
+    ], 'llama-3.1-8b-instant');
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // STEP 4: Save
+    // STEP 4: ✅ EXTRACT STRINGS (Agar object aaya toh handle kar lo)
+    const finalData = {
+      google_article: extractStringContent(result.google_article, 'google_article'),
+      twitter_thread: extractStringContent(result.twitter_thread, 'twitter_thread'),
+      linkedin_post: extractStringContent(result.linkedin_post, 'linkedin_post'),
+      reddit_post: extractStringContent(result.reddit_post, 'reddit_post'),
+      reels_script: extractStringContent(result.reels_script, 'reels_script'),
+      meta_title: extractStringContent(result.meta_title, 'meta_title'),
+      meta_description: extractStringContent(result.meta_description, 'meta_description'),
+    };
+
+    // STEP 5: Save to MongoDB
     await Campaign.findByIdAndUpdate(id, {
-      google_article: result.google_article,
-      twitter_thread: result.twitter_thread,
-      linkedin_post: result.linkedin_post,
-      reddit_post: result.reddit_post,
-      reels_script: result.reels_script,
-      meta_title: result.meta_title,
-      meta_description: result.meta_description,
+      google_article: finalData.google_article,
+      twitter_thread: finalData.twitter_thread,
+      linkedin_post: finalData.linkedin_post,
+      reddit_post: finalData.reddit_post,
+      reels_script: finalData.reels_script,
+      meta_title: finalData.meta_title,
+      meta_description: finalData.meta_description,
       trending_hook: trendingHook,
       status: 'completed'
     });
 
-    // STEP 5: Telegram
+    // STEP 6: Telegram
     await sendToMobile(`
 🚀 <b>${campaign.product_name}</b> Ready!
 
 🔥 <b>Hook:</b> ${trendingHook}
 
 🐦 <b>Twitter Start:</b>
-${result.twitter_thread.split('\n').slice(0, 3).join('\n')}...
+${finalData.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
 📥 Dashboard se download karein.
     `);
