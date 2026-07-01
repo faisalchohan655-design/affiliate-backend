@@ -9,10 +9,24 @@ const app = express();
 app.use(cors());
 app.use(express.json());
 
-// ========== DATABASE CONNECTION ==========
+// =============================================
+// 🚨 FIX 1: Database URL Check (Crash se bachayega)
+// =============================================
+const DATABASE_URL = process.env.DATABASE_URL;
+if (!DATABASE_URL) {
+  console.error('❌ FATAL ERROR: DATABASE_URL environment variable is MISSING!');
+  console.error('👉 Please add PostgreSQL plugin in Railway or set DATABASE_URL manually.');
+  process.exit(1); // Crash intentionally taki Railway logs mein clear dikhe
+}
+
+// =============================================
+// 🚨 FIX 2: Pool with Retry & SSL
+// =============================================
 const pool = new Pool({
-  connectionString: process.env.DATABASE_URL,
-  ssl: { rejectUnauthorized: false }
+  connectionString: DATABASE_URL,
+  ssl: { rejectUnauthorized: false },
+  connectionTimeoutMillis: 5000,
+  max: 5
 });
 
 // ========== OPENAI & TELEGRAM SETUP ==========
@@ -20,7 +34,7 @@ const openai = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
 const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
 const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
 
-// ========== TELEGRAM SENDER (Mobile Delivery) ==========
+// ========== TELEGRAM SENDER ==========
 async function sendToMobile(text) {
   if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
   try {
@@ -32,28 +46,43 @@ async function sendToMobile(text) {
   } catch (e) { console.log('Telegram error:', e.message); }
 }
 
-// ========== CREATE DATABASE TABLE (AUTO SETUP) ==========
-const initDB = async () => {
-  await pool.query(`
-    CREATE TABLE IF NOT EXISTS campaigns (
-      id SERIAL PRIMARY KEY,
-      product_name TEXT NOT NULL,
-      country TEXT DEFAULT 'us',
-      status TEXT DEFAULT 'pending',
-      google_article TEXT,
-      twitter_thread TEXT,
-      linkedin_post TEXT,
-      reddit_post TEXT,
-      reels_script TEXT,
-      meta_title TEXT,
-      meta_description TEXT,
-      trending_hook TEXT,
-      error_log TEXT,
-      created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-  console.log('✅ Database Table Ready');
-};
+// =============================================
+// 🚨 FIX 3: Database Init with RETRY (3 attempts)
+// =============================================
+async function initDB(retries = 3, delay = 2000) {
+  for (let i = 0; i < retries; i++) {
+    try {
+      await pool.query(`
+        CREATE TABLE IF NOT EXISTS campaigns (
+          id SERIAL PRIMARY KEY,
+          product_name TEXT NOT NULL,
+          country TEXT DEFAULT 'us',
+          status TEXT DEFAULT 'pending',
+          google_article TEXT,
+          twitter_thread TEXT,
+          linkedin_post TEXT,
+          reddit_post TEXT,
+          reels_script TEXT,
+          meta_title TEXT,
+          meta_description TEXT,
+          trending_hook TEXT,
+          error_log TEXT,
+          created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        );
+      `);
+      console.log('✅ Database Table Ready');
+      return;
+    } catch (err) {
+      console.log(`⚠️ DB Connection attempt ${i + 1} failed. Retrying in ${delay/1000}s...`);
+      if (i < retries - 1) {
+        await new Promise(resolve => setTimeout(resolve, delay));
+      } else {
+        console.error('❌ All DB connection attempts failed:', err.message);
+        process.exit(1);
+      }
+    }
+  }
+}
 initDB();
 
 // ========== THE MAIN AD-KILLER WORKER ==========
@@ -66,7 +95,7 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // STEP 1: SERPAPI - Smart Data Fetch
+    // STEP 1: SERPAPI
     const serpRes = await axios.get('https://serpapi.com/search.json', {
       params: {
         q: `best ${campaign.product_name} review 2026`,
@@ -81,7 +110,7 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: AI - Find the "Trending Hook" (Smart Feature)
+    // STEP 2: Trending Hook
     const hookCompletion = await openai.chat.completions.create({
       model: 'gpt-3.5-turbo',
       messages: [
@@ -92,7 +121,7 @@ async function processCampaign(id) {
     });
     const trendingHook = JSON.parse(hookCompletion.choices[0].message.content).hook;
 
-    // STEP 3: AI - Generate MEGA Content (5 Formats)
+    // STEP 3: AI Content Generation
     const aiResponse = await openai.chat.completions.create({
       model: 'gpt-4-turbo-preview',
       messages: [
@@ -131,7 +160,7 @@ async function processCampaign(id) {
       result.meta_description, trendingHook, id
     ]);
 
-    // STEP 5: 📱 POWER MOVE - Send Preview to Mobile (Telegram)
+    // STEP 5: Telegram Notification
     await sendToMobile(`
 🚀 <b>${campaign.product_name}</b> Ready!
 
@@ -140,11 +169,10 @@ async function processCampaign(id) {
 🐦 <b>Twitter Start:</b>
 ${result.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
-🎬 <b>Reels Script saved in DB.</b>
-Download from Dashboard or /api/download/${id}
+📥 Download full content from Dashboard.
     `);
 
-    console.log(`✅ Campaign ${id} complete & sent to Mobile!`);
+    console.log(`✅ Campaign ${id} complete!`);
 
   } catch (error) {
     console.error('❌ Worker Error:', error);
@@ -153,7 +181,7 @@ Download from Dashboard or /api/download/${id}
   }
 }
 
-// ========== EXPRESS API ROUTES ==========
+// ========== EXPRESS ROUTES ==========
 app.post('/api/start', async (req, res) => {
   const { product, country } = req.body;
   if (!product) return res.status(400).json({ error: 'Product name required' });
@@ -165,7 +193,13 @@ app.post('/api/start', async (req, res) => {
   const id = rows[0].id;
   
   processCampaign(id).catch(console.error);
-  res.json({ success: true, id, message: 'Started. Check Telegram in 2 mins!' });
+  res.json({ success: true, id, message: 'Started. Check Dashboard in 2 mins!' });
+});
+
+app.get('/api/status/:id', async (req, res) => {
+  const { rows } = await pool.query('SELECT * FROM campaigns WHERE id = $1', [req.params.id]);
+  if (rows.length === 0) return res.status(404).json({ error: 'Not found' });
+  res.json(rows[0]);
 });
 
 app.get('/api/download/:id', async (req, res) => {
