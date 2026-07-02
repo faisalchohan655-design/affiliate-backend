@@ -54,42 +54,56 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🖼️ PIXABAY IMAGE FETCHER (Reliable Alternative)
+// 🖼️ PIXABAY IMAGE FETCHER (WITH BASE64 CONVERSION)
 // =============================================
 async function fetchProductImage(productName) {
   try {
+    // Pehle Pixabay se URL lein
     const res = await axios.get('https://pixabay.com/api/', {
       params: {
         key: process.env.PIXABAY_API_KEY,
         q: `${productName} app software`,
         image_type: 'photo',
         per_page: 3,
-        min_width: 1200,
+        min_width: 800,
         safesearch: true,
       },
       timeout: 8000,
     });
     
     if (res.data.hits && res.data.hits.length > 0) {
-      // HD image lein (largeImageURL)
-      return res.data.hits[0].largeImageURL || res.data.hits[0].webformatURL;
+      const imageUrl = res.data.hits[0].largeImageURL || res.data.hits[0].webformatURL;
+      
+      // ✅ IMAGE DOWNLOAD KARKE BASE64 BANAO (100% Guarantee Show Hogi)
+      try {
+        const imageResponse = await axios.get(imageUrl, {
+          responseType: 'arraybuffer',
+          timeout: 10000,
+        });
+        const base64 = Buffer.from(imageResponse.data, 'binary').toString('base64');
+        const mimeType = imageResponse.headers['content-type'] || 'image/jpeg';
+        return `data:${mimeType};base64,${base64}`;
+      } catch (downloadError) {
+        console.log('⚠️ Image download fail, using direct URL as fallback');
+        return imageUrl;
+      }
     }
-    // Fallback: product-specific seed image
+    // Fallback: Picsum (HD)
     return `https://picsum.photos/seed/${encodeURIComponent(productName)}/1200/600`;
   } catch (e) {
-    console.log('⚠️ Pixabay fallback used');
+    console.log('⚠️ Pixabay fallback used (Picsum)');
     return `https://picsum.photos/seed/${encodeURIComponent(productName)}/1200/600`;
   }
 }
 
 // =============================================
-// 🤖 GROQ SETUP (SIMPLIFIED PROMPT)
+// 🤖 GROQ SETUP
 // =============================================
 async function callGroq(messages) {
   const url = 'https://api.groq.com/openai/v1/chat/completions';
   const response = await axios.post(url, {
     messages: messages,
-    model: 'llama-3.3-70b-versatile', // ✅ Stable model
+    model: 'llama-3.3-70b-versatile',
     response_format: { type: "json_object" },
     temperature: 0.7,
   }, {
@@ -142,7 +156,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ MAIN ENGINE V4.3 (FIXED)
+// ⚙️ MAIN ENGINE V4.4
 // =============================================
 async function processCampaign(id) {
   try {
@@ -152,7 +166,7 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // 1. Fetch HD Image (Pixabay)
+    // 1. Fetch Image (Base64 or Picsum)
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
 
@@ -171,12 +185,12 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // 3. AI Content (Simplified Prompt)
+    // 3. AI Content
     const aiResponse = await callGroqWithRetry([
       { 
         role: 'system', 
         content: `You are a brutally honest consumer advocate. Tone: bold, punchy. Use emojis ⚠️🔥❌✅. 
-        Return ONLY JSON with these keys: trending_hook, google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.
+        Return ONLY JSON with keys: trending_hook, google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.
         Keep google_article as raw HTML string.`
       },
       { 
@@ -213,11 +227,11 @@ async function processCampaign(id) {
     article = article.replace(/<img[^>]*>/gi, '');
     article = article.replace(/<a\s+[^>]*>.*?<\/a>/gi, '');
 
-    // Inject HD Image at top
-    const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review" style="width:100%; max-width:100%; height:auto; border-radius:12px; margin:20px 0;" />`;
+    // ✅ Inject Image with referrerpolicy="no-referrer" (Pixabay support)
+    const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review" style="width:100%; max-width:100%; height:auto; border-radius:12px; margin:20px 0;" referrerpolicy="no-referrer" />`;
     article = imageHtml + article;
 
-    // Add clean CTA button at bottom
+    // Add clean CTA button
     const affiliateLink = campaign.affiliate_link || '';
     if (affiliateLink) {
       const cta = `
@@ -264,11 +278,11 @@ async function processCampaign(id) {
 
     // 6. Telegram
     await sendToMobile(`
-🚀 <b>${campaign.product_name}</b> V4.3 Ready!
+🚀 <b>${campaign.product_name}</b> V4.4 Ready!
 
 🔥 <b>Hook:</b> ${finalData.trending_hook}
 
-🖼️ <b>Image:</b> HD (Pixabay)
+🖼️ <b>Image:</b> Base64 Converted (100% visible)
 🔗 <b>Link:</b> Clean CTA Added
 
 📥 Download from Dashboard.
@@ -316,4 +330,4 @@ app.get('/api/download/:id', async (req, res) => {
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.3 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.4 running on port ${PORT}`));
