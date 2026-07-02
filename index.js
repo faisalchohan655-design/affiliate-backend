@@ -54,10 +54,11 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🖼️ OKSLOP IMAGE FETCHER (With Better Fallback)
+// 🖼️ OKSLOP IMAGE FETCHER (Fixed)
 // =============================================
 async function fetchProductImage(productName) {
   try {
+    // Try OKSLOP API
     const res = await axios.get('https://okslop.com/api/v1/search/photos', {
       params: {
         query: `${productName} app software`,
@@ -67,13 +68,21 @@ async function fetchProductImage(productName) {
       timeout: 5000,
     });
     
-    if (res.data.results && res.data.results.length > 0) {
-      return res.data.results[0].urls.regular;
+    // Check response structure
+    if (res.data && res.data.results && res.data.results.length > 0) {
+      const photo = res.data.results[0];
+      // Handle multiple possible URL formats
+      if (photo.urls && photo.urls.regular) {
+        return photo.urls.regular;
+      }
+      if (photo.url) return photo.url;
+      if (photo.download_url) return photo.download_url;
+      if (photo.image_url) return photo.image_url;
     }
-    // Better fallback: Product-specific picsum seed
+    // Fallback: Product-specific pic (not random)
     return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
   } catch (e) {
-    console.log('⚠️ OKSLOP fallback used');
+    console.log('⚠️ OKSLOP failed, using picsum seed');
     return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
   }
 }
@@ -110,7 +119,7 @@ async function callGroqWithRetry(messages, maxRetries = 3) {
 }
 
 // =============================================
-// 📥 HELPER: Extract String (Handles Nested JSON)
+// 📥 HELPER: Extract String (Fixes Nested Object)
 // =============================================
 function extractString(value) {
   if (typeof value === 'string') return value;
@@ -119,8 +128,10 @@ function extractString(value) {
     if (value.content) return value.content;
     if (value.text) return value.text;
     if (value.article) return value.article;
-    if (value.product_image) return value.product_image; // <- Naya fix
-    // Agar kuch na mile toh poori object ko string bana do
+    if (value.product_image) return value.product_image; // <-- Naya fix for nested image
+    if (value.html) return value.html;
+    if (value.body) return value.body;
+    // Agar kuch na mile toh poori object ko string bana do (JSON.stringify)
     return JSON.stringify(value);
   }
   return String(value || '');
@@ -141,7 +152,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ MAIN ENGINE V4.1 (FORCEFUL FIX)
+// ⚙️ MAIN ENGINE V4.2 (ULTRA-STABLE IMAGE)
 // =============================================
 async function processCampaign(id) {
   try {
@@ -151,9 +162,10 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // 1. Fetch Image (OKSLOP)
+    // 1. Fetch Image (OKSLOP with fallback)
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
+    console.log(`🖼️ Image URL: ${imageUrl}`);
 
     // 2. SERPAPI Data
     const serpRes = await axios.get('https://serpapi.com/search.json', {
@@ -170,19 +182,18 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // 3. AI: ULTRA-STRICT PROMPT (For Pure String Article)
+    // 3. AI: ULTRA-STRICT PROMPT
     const aiResponse = await callGroqWithRetry([
       { 
         role: 'system', 
         content: `You are a rebellious, brutally honest consumer advocate. 
         Tone: Bold, punchy, short sentences. Use emojis like ⚠️, 🔥, ❌, ✅.
-        CRITICAL RULES FOR JSON OUTPUT:
-        - "google_article" MUST be a SINGLE CONTINUOUS STRING of raw HTML. Start with <h1> and end with </html>. DO NOT use nested JSON objects inside this field. NO { } brackets inside this field.
+        
+        CRITICAL RULES:
+        - "google_article" MUST be a SINGLE CONTINUOUS STRING of raw HTML. Start with <h1> and end with </html>.
         - "twitter_thread" MUST be a SINGLE STRING with newlines (\n) between tweets.
-        - All other fields ("linkedin_post", "reddit_post", "reels_script", "meta_title", "meta_description") MUST be plain strings.
-
-        AFFILIATE LINK RULE (${campaign.affiliate_link || 'No link'}):
-        If link is provided, ALWAYS embed it as HTML <a href="LINK" target="_blank">Click Here to Check Deal</a> or "Click Here". NEVER show the raw URL.
+        - All other fields MUST be plain strings.
+        - For affiliate link (${campaign.affiliate_link || 'No link'}): ALWAYS embed it as <a href="LINK" target="_blank">Click Here to Check Deal</a> in all formats.
         `
       },
       { 
@@ -194,11 +205,11 @@ async function processCampaign(id) {
         Affiliate Link: ${campaign.affiliate_link || 'No link'}
 
         Generate these 7 fields as STRINGS:
-        1. trending_hook: "⚠️ STOP! Don't buy ${campaign.product_name} before reading this" (or similar).
-        2. google_article: 1500-word detailed HTML review. Start with <h1>Review of ${campaign.product_name}</h1>. Add <h2>Why Ads Lie</h2>. Add <h2>Comparison Table</h2>.
-        3. twitter_thread: 15 tweets with newlines. Tweet 1 = hook. Tweet 15 = "Click Here" CTA.
+        1. trending_hook: "⚠️ STOP! Don't buy ${campaign.product_name} before reading this".
+        2. google_article: 1500-word HTML review. Include <h2>Why Ads Lie</h2> and <h2>Comparison Table</h2>.
+        3. twitter_thread: 15 tweets (1/15 to 15/15). Tweet 1 = hook, Tweet 15 = "Click Here".
         4. linkedin_post: 400 words professional story.
-        5. reddit_post: "I tested ${campaign.product_name} for 30 days (Honest Review)". TL;DR.
+        5. reddit_post: "I tested ${campaign.product_name} for 30 days (Honest Review)". Include TL;DR.
         6. reels_script: 60-second script (Scene 1 to 5).
         7. meta_title: Under 60 chars.
         8. meta_description: Under 160 chars.
@@ -208,10 +219,10 @@ async function processCampaign(id) {
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // 4. Extract & Fix Google Article (Inject Image forcefully)
+    // 4. Extract article
     let articleContent = extractString(result.google_article);
     
-    // Agar article empty hai toh default create karo
+    // Agar article empty hai toh default
     if (!articleContent || articleContent.length < 50) {
       articleContent = `<h1>${campaign.product_name} Review 2026</h1><p>Detailed review coming soon...</p>`;
     }
@@ -221,23 +232,19 @@ async function processCampaign(id) {
     
     // Agar article mein pehle se image hai toh replace kar do, warna top par add kar do
     if (articleContent.includes('<img')) {
-      // Pehle image ko replace kar do
       articleContent = articleContent.replace(/<img[^>]*>/i, imageHtml);
     } else {
-      // Top par image daal do
       articleContent = imageHtml + articleContent;
     }
 
-    // 🔥 FORCEFUL LINK FIX (Agar AI ne raw URL dikha diya toh replace kar do)
+    // 🔥 FORCEFUL LINK FIX (Raw URL ko "Click Here" mein badal do)
     const affiliateLink = campaign.affiliate_link || '';
     if (affiliateLink) {
-      // Raw URL ko "Click Here" mein badal do
       const clickHereHtml = `<a href="${affiliateLink}" target="_blank" rel="nofollow sponsored">Click Here to Check the Best Deal</a>`;
-      // Agar article mein raw URL hai toh replace karo, nahi toh naturally embed ho chuka hoga
       articleContent = articleContent.replace(new RegExp(affiliateLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), clickHereHtml);
     }
 
-    // Twitter thread mein bhi raw URL replace karo
+    // Twitter thread mein bhi raw URL fix
     let twitterThread = extractString(result.twitter_thread);
     if (affiliateLink && twitterThread.includes(affiliateLink)) {
       twitterThread = twitterThread.replace(new RegExp(affiliateLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), 'Click Here');
@@ -246,7 +253,7 @@ async function processCampaign(id) {
     // 5. Final Data
     const finalData = {
       trending_hook: extractString(result.trending_hook),
-      google_article: articleContent, // Forcefully injected image
+      google_article: articleContent,
       twitter_thread: twitterThread,
       linkedin_post: extractString(result.linkedin_post),
       reddit_post: extractString(result.reddit_post),
@@ -270,12 +277,12 @@ async function processCampaign(id) {
 
     // 7. Telegram Alert
     await sendToMobile(`
-🚀 <b>${campaign.product_name}</b> V4.1 Ready!
+🚀 <b>${campaign.product_name}</b> V4.2 Ready!
 
 🔥 <b>Hook:</b> ${finalData.trending_hook}
 
-🖼️ <b>Image Injected:</b> ✅ (Forced at top of article)
-🔗 <b>Link Cleaned:</b> ✅ (Raw URL hidden)
+🖼️ <b>Image URL:</b> ${imageUrl}
+🔗 <b>Affiliate Link:</b> ${affiliateLink || 'None'}
 
 📥 Dashboard se download karein.
     `);
@@ -322,4 +329,4 @@ app.get('/api/download/:id', async (req, res) => {
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.1 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.2 running on port ${PORT}`));
