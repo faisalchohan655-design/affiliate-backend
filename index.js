@@ -54,36 +54,27 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🖼️ OKSLOP IMAGE FETCHER (Fixed)
+// 🖼️ IMAGE FETCHER (OKSLOP + HD Fallback)
 // =============================================
 async function fetchProductImage(productName) {
   try {
-    // Try OKSLOP API
     const res = await axios.get('https://okslop.com/api/v1/search/photos', {
       params: {
-        query: `${productName} app software`,
+        query: `${productName} software app`,
         per_page: 1,
         client_id: process.env.OKSLOP_API_KEY,
       },
       timeout: 5000,
     });
     
-    // Check response structure
-    if (res.data && res.data.results && res.data.results.length > 0) {
-      const photo = res.data.results[0];
-      // Handle multiple possible URL formats
-      if (photo.urls && photo.urls.regular) {
-        return photo.urls.regular;
-      }
-      if (photo.url) return photo.url;
-      if (photo.download_url) return photo.download_url;
-      if (photo.image_url) return photo.image_url;
+    if (res.data.results && res.data.results.length > 0) {
+      return res.data.results[0].urls.regular;
     }
-    // Fallback: Product-specific pic (not random)
-    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
+    // ✅ HD Fallback (size 1200x600) - har product ke liye unique seed
+    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/1200/600`;
   } catch (e) {
-    console.log('⚠️ OKSLOP failed, using picsum seed');
-    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
+    console.log('⚠️ OKSLOP fallback used (HD picsum)');
+    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/1200/600`;
   }
 }
 
@@ -119,19 +110,14 @@ async function callGroqWithRetry(messages, maxRetries = 3) {
 }
 
 // =============================================
-// 📥 HELPER: Extract String (Fixes Nested Object)
+// 📥 HELPER: Extract String
 // =============================================
 function extractString(value) {
   if (typeof value === 'string') return value;
   if (typeof value === 'object' && value !== null) {
-    // Agar nested object hai toh usme se content dhoondho
     if (value.content) return value.content;
     if (value.text) return value.text;
     if (value.article) return value.article;
-    if (value.product_image) return value.product_image; // <-- Naya fix for nested image
-    if (value.html) return value.html;
-    if (value.body) return value.body;
-    // Agar kuch na mile toh poori object ko string bana do (JSON.stringify)
     return JSON.stringify(value);
   }
   return String(value || '');
@@ -152,7 +138,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ MAIN ENGINE V4.2 (ULTRA-STABLE IMAGE)
+// ⚙️ MAIN ENGINE V4.2 (FORCEFUL CLEANUP)
 // =============================================
 async function processCampaign(id) {
   try {
@@ -162,10 +148,9 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // 1. Fetch Image (OKSLOP with fallback)
+    // 1. Fetch HD Image
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
-    console.log(`🖼️ Image URL: ${imageUrl}`);
 
     // 2. SERPAPI Data
     const serpRes = await axios.get('https://serpapi.com/search.json', {
@@ -182,18 +167,14 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // 3. AI: ULTRA-STRICT PROMPT
+    // 3. AI Content Generation (ULTRA-STRICT TONE)
     const aiResponse = await callGroqWithRetry([
       { 
         role: 'system', 
         content: `You are a rebellious, brutally honest consumer advocate. 
         Tone: Bold, punchy, short sentences. Use emojis like ⚠️, 🔥, ❌, ✅.
-        
-        CRITICAL RULES:
-        - "google_article" MUST be a SINGLE CONTINUOUS STRING of raw HTML. Start with <h1> and end with </html>.
-        - "twitter_thread" MUST be a SINGLE STRING with newlines (\n) between tweets.
-        - All other fields MUST be plain strings.
-        - For affiliate link (${campaign.affiliate_link || 'No link'}): ALWAYS embed it as <a href="LINK" target="_blank">Click Here to Check Deal</a> in all formats.
+        START the google_article with exactly this heading: <h1>⚠️ STOP! The Truth About ${campaign.product_name} in 2026</h1>.
+        Then write a brutally honest, investigative review.
         `
       },
       { 
@@ -205,11 +186,11 @@ async function processCampaign(id) {
         Affiliate Link: ${campaign.affiliate_link || 'No link'}
 
         Generate these 7 fields as STRINGS:
-        1. trending_hook: "⚠️ STOP! Don't buy ${campaign.product_name} before reading this".
-        2. google_article: 1500-word HTML review. Include <h2>Why Ads Lie</h2> and <h2>Comparison Table</h2>.
-        3. twitter_thread: 15 tweets (1/15 to 15/15). Tweet 1 = hook, Tweet 15 = "Click Here".
+        1. trending_hook: "⚠️ STOP! Don't buy ${campaign.product_name} before reading this" (or similar).
+        2. google_article: 1500-word HTML review. Start with <h1>⚠️ STOP! The Truth About ${campaign.product_name} in 2026</h1>. Include <h2>Why Ads Lie</h2> and <h2>Comparison Table</h2>. Do NOT put any image tags. Just pure text HTML.
+        3. twitter_thread: 15 tweets (1/15 to 15/15). Tweet 1 = hook. Tweet 15 = "Click Here".
         4. linkedin_post: 400 words professional story.
-        5. reddit_post: "I tested ${campaign.product_name} for 30 days (Honest Review)". Include TL;DR.
+        5. reddit_post: "I tested ${campaign.product_name} for 30 days (Honest Review)". TL;DR.
         6. reels_script: 60-second script (Scene 1 to 5).
         7. meta_title: Under 60 chars.
         8. meta_description: Under 160 chars.
@@ -219,42 +200,53 @@ async function processCampaign(id) {
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // 4. Extract article
-    let articleContent = extractString(result.google_article);
-    
-    // Agar article empty hai toh default
-    if (!articleContent || articleContent.length < 50) {
-      articleContent = `<h1>${campaign.product_name} Review 2026</h1><p>Detailed review coming soon...</p>`;
+    // ===========================================
+    // 🔥 FORCEFUL FIX 1: IMAGE INJECTION
+    // ===========================================
+    let article = extractString(result.google_article);
+    if (!article || article.length < 50) {
+      article = `<h1>${campaign.product_name} Review</h1><p>Detailed review coming soon...</p>`;
     }
-
-    // 🔥 FORCEFUL IMAGE INJECTION (Backend se hi daal rahe hain)
-    const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review 2026" style="width:100%; max-width:800px; height:auto; border-radius:12px; margin:20px 0;" />`;
     
-    // Agar article mein pehle se image hai toh replace kar do, warna top par add kar do
-    if (articleContent.includes('<img')) {
-      articleContent = articleContent.replace(/<img[^>]*>/i, imageHtml);
-    } else {
-      articleContent = imageHtml + articleContent;
-    }
+    // Clean existing images and links
+    article = article.replace(/<img[^>]*>/gi, ''); // Remove all old images
+    article = article.replace(/<a\s+[^>]*>.*?<\/a>/gi, ''); // Remove ALL old links (to fix nested tags)
 
-    // 🔥 FORCEFUL LINK FIX (Raw URL ko "Click Here" mein badal do)
+    // Inject HD Image at the top
+    const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review 2026" style="width:100%; max-width:100%; height:auto; border-radius:16px; margin:20px 0; box-shadow: 0 4px 20px rgba(0,0,0,0.1);" />`;
+    article = imageHtml + article;
+
+    // ===========================================
+    // 🔥 FORCEFUL FIX 2: CLEAN "CLICK HERE" LINK
+    // ===========================================
     const affiliateLink = campaign.affiliate_link || '';
     if (affiliateLink) {
-      const clickHereHtml = `<a href="${affiliateLink}" target="_blank" rel="nofollow sponsored">Click Here to Check the Best Deal</a>`;
-      articleContent = articleContent.replace(new RegExp(affiliateLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), clickHereHtml);
+      // Append a beautiful, clean CTA at the bottom
+      const ctaHtml = `
+        <div style="background:#f5f5f5; padding:25px; border-radius:16px; text-align:center; margin:40px 0; border:1px solid #e0e0e0;">
+          <p style="font-size:18px; font-weight:bold;">✅ Ready to make the right choice?</p>
+          <a href="${affiliateLink}" target="_blank" rel="nofollow sponsored" style="background:#000; color:#fff; padding:14px 35px; text-decoration:none; border-radius:50px; font-weight:bold; display:inline-block; font-size:18px;">
+            👉 Click Here to Grab the Exclusive Deal
+          </a>
+        </div>
+      `;
+      article += ctaHtml;
     }
 
-    // Twitter thread mein bhi raw URL fix
-    let twitterThread = extractString(result.twitter_thread);
-    if (affiliateLink && twitterThread.includes(affiliateLink)) {
-      twitterThread = twitterThread.replace(new RegExp(affiliateLink.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), 'Click Here');
+    // ===========================================
+    // 🔥 FORCEFUL FIX 3: CLEAN TWITTER LINKS
+    // ===========================================
+    let twitter = extractString(result.twitter_thread);
+    twitter = twitter.replace(/(https?:\/\/[^\s]+)/g, ''); // Remove raw URLs from Twitter text
+    if (affiliateLink) {
+      twitter += `\n\n✅ Click Here to Check the Best Deal → ${affiliateLink}`;
     }
 
     // 5. Final Data
     const finalData = {
       trending_hook: extractString(result.trending_hook),
-      google_article: articleContent,
-      twitter_thread: twitterThread,
+      google_article: article,
+      twitter_thread: twitter,
       linkedin_post: extractString(result.linkedin_post),
       reddit_post: extractString(result.reddit_post),
       reels_script: extractString(result.reels_script),
@@ -281,8 +273,8 @@ async function processCampaign(id) {
 
 🔥 <b>Hook:</b> ${finalData.trending_hook}
 
-🖼️ <b>Image URL:</b> ${imageUrl}
-🔗 <b>Affiliate Link:</b> ${affiliateLink || 'None'}
+🖼️ <b>Image:</b> HD Quality Injected
+🔗 <b>Link:</b> Clean "Click Here" Added
 
 📥 Dashboard se download karein.
     `);
