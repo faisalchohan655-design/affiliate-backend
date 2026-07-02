@@ -237,7 +237,12 @@ async function processCampaign(id) {
         8. meta_description: 150-160 characters
         `
       }
-    ], 'llama-3.1-8b-instant');
+    ]);
+
+    // ✅ FIX: Add error handling if AI response is invalid
+    if (!aiResponse || !aiResponse.choices || !aiResponse.choices[0] || !aiResponse.choices[0].message) {
+      throw new Error('Invalid AI response structure. Check Groq API key or model availability.');
+    }
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
