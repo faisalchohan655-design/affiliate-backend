@@ -80,23 +80,33 @@ async function fetchProductImage(productName) {
 }
 
 // =============================================
-// 🤖 GROQ SETUP (Direct Axios)
+// 🤖 GROQ SETUP - FIXED: Model changed, better error logging
 // =============================================
 async function callGroq(messages) {
   const url = 'https://api.groq.com/openai/v1/chat/completions';
-  const response = await axios.post(url, {
-    messages: messages,
-    model: 'llama-3.1-8b-instant',
-    response_format: { type: "json_object" },
-    temperature: 0.75,
-  }, {
-    headers: {
-      'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
-      'Content-Type': 'application/json',
-    },
-    timeout: 60000,
-  });
-  return response.data;
+  try {
+    const response = await axios.post(url, {
+      messages: messages,
+      model: 'llama-3.3-70b-versatile', // ✅ Stable model with JSON support
+      response_format: { type: "json_object" },
+      temperature: 0.75,
+    }, {
+      headers: {
+        'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
+        'Content-Type': 'application/json',
+      },
+      timeout: 60000,
+    });
+    return response.data;
+  } catch (error) {
+    // ✅ Detailed error logging
+    console.error('Groq API Error:', {
+      status: error.response?.status,
+      data: error.response?.data,
+      message: error.message
+    });
+    throw error;
+  }
 }
 
 async function callGroqWithRetry(messages, maxRetries = 3) {
@@ -139,7 +149,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ MAIN ENGINE - ULTIMATE SEO + UNIQUENESS
+// ⚙️ MAIN ENGINE
 // =============================================
 async function processCampaign(id) {
   try {
@@ -153,9 +163,9 @@ async function processCampaign(id) {
     console.log('📸 Fetching image...');
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
-    console.log('✅ Image fetched:', imageUrl.substring(0, 50) + '...');
+    console.log('✅ Image fetched');
 
-    // 2. SERPAPI Data - ✅ FIXED: Manual URL build
+    // 2. SERPAPI Data
     console.log('🔍 Fetching SERPAPI data...');
     const serpUrl = `https://serpapi.com/search.json?key=${process.env.SERPAPI_KEY}&q=${encodeURIComponent(`best ${campaign.product_name} review 2026`)}&gl=${campaign.country || 'us'}&num=5&include_people_also_ask=true`;
     const serpRes = await axios.get(serpUrl, { timeout: 15000 });
@@ -163,49 +173,37 @@ async function processCampaign(id) {
 
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
-    console.log(`📊 Found ${snippets.length} chars of competitor data`);
+    console.log(`📊 Found ${snippets.length} chars`);
 
-    // 3. AI Content - ULTIMATE SEO + UNIQUENESS ENGINE
-    console.log('🤖 Generating AI content (2500+ words)...');
+    // 3. AI Content - COMPACT PROMPT
+    console.log('🤖 Generating AI content...');
     const aiResponse = await callGroqWithRetry([
       { 
         role: 'system', 
-        content: `You are a world-class SEO journalist and consumer advocate. 
-        
-        YOUR MANDATE:
-        - Write 2500+ words of deeply researched, brutally honest content.
-        - EVERY article must have a COMPLETELY DIFFERENT structure. Never repeat the same H2/H3 pattern twice.
-        - SEO BASICS ARE FIXED: Always include proper H1, H2, H3 hierarchy, meta title, meta description, and one comparison table.
-        - ZERO EMOJIS in google_article. Professional, authoritative tone.`
+        content: `You are an SEO journalist. Write 2500+ word reviews. No emojis. Include H1, H2, H3, comparison table, FAQ (3+ Qs). Unique structure each time. Return valid JSON.`
       },
       { 
         role: 'user', 
         content: `
-        PRODUCT: ${campaign.product_name}
-        COMPETITOR DATA: ${snippets.substring(0, 2500)}
-        USER QUESTIONS: ${JSON.stringify(peopleAlsoAsk)}
-        AFFILIATE LINK: ${campaign.affiliate_link || 'No link provided'}
+        Product: ${campaign.product_name}
+        Data: ${snippets.substring(0, 2000)}
+        Questions: ${JSON.stringify(peopleAlsoAsk)}
+        Affiliate Link: ${campaign.affiliate_link || 'None'}
 
-        Generate a UNIQUE 2500+ word SEO article.
-        Start with <h1>.
-        Include: comparison table, FAQ section (3+ questions), meta title (50-60 chars), meta description (150-160 chars).
-        If affiliate link provided, embed it once as: <a href="LINK" target="_blank">Click Here to Grab the Deal</a>
-
-        OUTPUT (JSON):
-        1. trending_hook
-        2. google_article (HTML string)
-        3. twitter_thread (15 tweets)
-        4. linkedin_post (400 words)
-        5. reddit_post (500 words)
-        6. reels_script (60-sec)
-        7. meta_title
-        8. meta_description
+        Generate JSON:
+        1. trending_hook (string)
+        2. google_article (HTML string, start with <h1>)
+        3. twitter_thread (string, 15 tweets)
+        4. linkedin_post (string, 400 words)
+        5. reddit_post (string, 500 words)
+        6. reels_script (string)
+        7. meta_title (string, 50-60 chars)
+        8. meta_description (string, 150-160 chars)
         `
       }
     ]);
 
-    // ✅ Error handling if AI response is invalid
-    if (!aiResponse || !aiResponse.choices || !aiResponse.choices[0] || !aiResponse.choices[0].message) {
+    if (!aiResponse?.choices?.[0]?.message) {
       throw new Error('Invalid AI response. Check Groq API key.');
     }
 
@@ -213,22 +211,19 @@ async function processCampaign(id) {
     console.log('✅ AI content generated');
 
     // ===========================================
-    // FORCEFUL CLEANUP: Image + Link
+    // CLEANUP: Image + Link
     // ===========================================
     let article = extractString(result.google_article);
     if (!article || article.length < 50) {
       article = `<h1>${campaign.product_name} Review</h1><p>Detailed review...</p>`;
     }
     
-    // Remove all old images and links
     article = article.replace(/<img[^>]*>/gi, '');
     article = article.replace(/<a\s+[^>]*>.*?<\/a>/gi, '');
 
-    // Inject Image
     const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review" style="width:100%; max-width:100%; height:auto; border-radius:12px; margin:20px 0;" referrerpolicy="no-referrer" />`;
     article = imageHtml + article;
 
-    // Add clean CTA button
     const affiliateLink = campaign.affiliate_link || '';
     if (affiliateLink) {
       const cta = `
@@ -241,14 +236,12 @@ async function processCampaign(id) {
       article += cta;
     }
 
-    // Clean Twitter
     let twitter = extractString(result.twitter_thread);
     twitter = twitter.replace(/(https?:\/\/[^\s]+)/g, '');
     if (affiliateLink) {
       twitter += `\n\n✅ Click Here → ${affiliateLink}`;
     }
 
-    // 4. Final Data
     const finalData = {
       trending_hook: extractString(result.trending_hook),
       google_article: article,
@@ -260,7 +253,6 @@ async function processCampaign(id) {
       meta_description: extractString(result.meta_description),
     };
 
-    // 5. Save
     await Campaign.findByIdAndUpdate(id, {
       trending_hook: finalData.trending_hook,
       google_article: finalData.google_article,
@@ -273,7 +265,6 @@ async function processCampaign(id) {
       status: 'completed'
     });
 
-    // 6. Telegram
     await sendToMobile(`
 🚀 <b>${campaign.product_name}</b> SEO Article Ready!
 
