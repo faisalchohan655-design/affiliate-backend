@@ -54,40 +54,44 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🖼️ IMAGE FETCHER (OKSLOP + HD Fallback)
+// 🖼️ PIXABAY IMAGE FETCHER (Reliable Alternative)
 // =============================================
 async function fetchProductImage(productName) {
   try {
-    const res = await axios.get('https://okslop.com/api/v1/search/photos', {
+    const res = await axios.get('https://pixabay.com/api/', {
       params: {
-        query: `${productName} software app`,
-        per_page: 1,
-        client_id: process.env.OKSLOP_API_KEY,
+        key: process.env.PIXABAY_API_KEY,
+        q: `${productName} app software`,
+        image_type: 'photo',
+        per_page: 3,
+        min_width: 1200,
+        safesearch: true,
       },
-      timeout: 5000,
+      timeout: 8000,
     });
     
-    if (res.data.results && res.data.results.length > 0) {
-      return res.data.results[0].urls.regular;
+    if (res.data.hits && res.data.hits.length > 0) {
+      // HD image lein (largeImageURL)
+      return res.data.hits[0].largeImageURL || res.data.hits[0].webformatURL;
     }
-    // ✅ HD Fallback (size 1200x600) - har product ke liye unique seed
+    // Fallback: product-specific seed image
     return `https://picsum.photos/seed/${encodeURIComponent(productName)}/1200/600`;
   } catch (e) {
-    console.log('⚠️ OKSLOP fallback used (HD picsum)');
+    console.log('⚠️ Pixabay fallback used');
     return `https://picsum.photos/seed/${encodeURIComponent(productName)}/1200/600`;
   }
 }
 
 // =============================================
-// 🤖 GROQ SETUP
+// 🤖 GROQ SETUP (SIMPLIFIED PROMPT)
 // =============================================
 async function callGroq(messages) {
   const url = 'https://api.groq.com/openai/v1/chat/completions';
   const response = await axios.post(url, {
     messages: messages,
-    model: 'llama-3.1-8b-instant',
+    model: 'llama-3.3-70b-versatile', // ✅ Stable model
     response_format: { type: "json_object" },
-    temperature: 0.75,
+    temperature: 0.7,
   }, {
     headers: {
       'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
@@ -102,7 +106,7 @@ async function callGroqWithRetry(messages, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
     try { return await callGroq(messages); } 
     catch (e) {
-      console.log(`⚠️ Groq attempt ${i+1} failed. Retrying...`);
+      console.log(`⚠️ Groq attempt ${i+1} failed: ${e.message}`);
       if (i === maxRetries - 1) throw e;
       await new Promise(res => setTimeout(res, 3000));
     }
@@ -138,7 +142,7 @@ async function sendToMobile(text) {
 }
 
 // =============================================
-// ⚙️ MAIN ENGINE V4.2 (FORCEFUL CLEANUP)
+// ⚙️ MAIN ENGINE V4.3 (FIXED)
 // =============================================
 async function processCampaign(id) {
   try {
@@ -148,7 +152,7 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // 1. Fetch HD Image
+    // 1. Fetch HD Image (Pixabay)
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
 
@@ -167,31 +171,28 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // 3. AI Content Generation (ULTRA-STRICT TONE)
+    // 3. AI Content (Simplified Prompt)
     const aiResponse = await callGroqWithRetry([
       { 
         role: 'system', 
-        content: `You are a rebellious, brutally honest consumer advocate. 
-        Tone: Bold, punchy, short sentences. Use emojis like ⚠️, 🔥, ❌, ✅.
-        START the google_article with exactly this heading: <h1>⚠️ STOP! The Truth About ${campaign.product_name} in 2026</h1>.
-        Then write a brutally honest, investigative review.
-        `
+        content: `You are a brutally honest consumer advocate. Tone: bold, punchy. Use emojis ⚠️🔥❌✅. 
+        Return ONLY JSON with these keys: trending_hook, google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.
+        Keep google_article as raw HTML string.`
       },
       { 
         role: 'user', 
         content: `
         Product: ${campaign.product_name}
-        Competitor Data: ${snippets.substring(0, 3000)}
-        People Also Ask: ${JSON.stringify(peopleAlsoAsk)}
+        Data: ${snippets.substring(0, 2000)}
         Affiliate Link: ${campaign.affiliate_link || 'No link'}
 
-        Generate these 7 fields as STRINGS:
-        1. trending_hook: "⚠️ STOP! Don't buy ${campaign.product_name} before reading this" (or similar).
-        2. google_article: 1500-word HTML review. Start with <h1>⚠️ STOP! The Truth About ${campaign.product_name} in 2026</h1>. Include <h2>Why Ads Lie</h2> and <h2>Comparison Table</h2>. Do NOT put any image tags. Just pure text HTML.
-        3. twitter_thread: 15 tweets (1/15 to 15/15). Tweet 1 = hook. Tweet 15 = "Click Here".
-        4. linkedin_post: 400 words professional story.
-        5. reddit_post: "I tested ${campaign.product_name} for 30 days (Honest Review)". TL;DR.
-        6. reels_script: 60-second script (Scene 1 to 5).
+        Generate:
+        1. trending_hook: "⚠️ STOP! Don't buy ${campaign.product_name} before reading this"
+        2. google_article: 1200-word HTML. Start with <h1>⚠️ STOP! The Truth About ${campaign.product_name} in 2026</h1>. Include <h2>Why Ads Lie</h2> and <h2>Comparison Table</h2>.
+        3. twitter_thread: 15 tweets.
+        4. linkedin_post: 300 words.
+        5. reddit_post: Honest review with TL;DR.
+        6. reels_script: 60-second script.
         7. meta_title: Under 60 chars.
         8. meta_description: Under 160 chars.
         `
@@ -201,48 +202,42 @@ async function processCampaign(id) {
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
     // ===========================================
-    // 🔥 FORCEFUL FIX 1: IMAGE INJECTION
+    // FORCEFUL CLEANUP: Image + Link
     // ===========================================
     let article = extractString(result.google_article);
     if (!article || article.length < 50) {
-      article = `<h1>${campaign.product_name} Review</h1><p>Detailed review coming soon...</p>`;
+      article = `<h1>${campaign.product_name} Review</h1><p>Detailed review...</p>`;
     }
     
-    // Clean existing images and links
-    article = article.replace(/<img[^>]*>/gi, ''); // Remove all old images
-    article = article.replace(/<a\s+[^>]*>.*?<\/a>/gi, ''); // Remove ALL old links (to fix nested tags)
+    // Remove all old images and links
+    article = article.replace(/<img[^>]*>/gi, '');
+    article = article.replace(/<a\s+[^>]*>.*?<\/a>/gi, '');
 
-    // Inject HD Image at the top
-    const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review 2026" style="width:100%; max-width:100%; height:auto; border-radius:16px; margin:20px 0; box-shadow: 0 4px 20px rgba(0,0,0,0.1);" />`;
+    // Inject HD Image at top
+    const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review" style="width:100%; max-width:100%; height:auto; border-radius:12px; margin:20px 0;" />`;
     article = imageHtml + article;
 
-    // ===========================================
-    // 🔥 FORCEFUL FIX 2: CLEAN "CLICK HERE" LINK
-    // ===========================================
+    // Add clean CTA button at bottom
     const affiliateLink = campaign.affiliate_link || '';
     if (affiliateLink) {
-      // Append a beautiful, clean CTA at the bottom
-      const ctaHtml = `
-        <div style="background:#f5f5f5; padding:25px; border-radius:16px; text-align:center; margin:40px 0; border:1px solid #e0e0e0;">
-          <p style="font-size:18px; font-weight:bold;">✅ Ready to make the right choice?</p>
-          <a href="${affiliateLink}" target="_blank" rel="nofollow sponsored" style="background:#000; color:#fff; padding:14px 35px; text-decoration:none; border-radius:50px; font-weight:bold; display:inline-block; font-size:18px;">
-            👉 Click Here to Grab the Exclusive Deal
+      const cta = `
+        <div style="background:#f5f5f5; padding:20px; border-radius:12px; text-align:center; margin:30px 0;">
+          <a href="${affiliateLink}" target="_blank" rel="nofollow sponsored" style="background:#000; color:#fff; padding:12px 30px; border-radius:50px; text-decoration:none; font-weight:bold; display:inline-block;">
+            👉 Click Here to Grab the Deal
           </a>
         </div>
       `;
-      article += ctaHtml;
+      article += cta;
     }
 
-    // ===========================================
-    // 🔥 FORCEFUL FIX 3: CLEAN TWITTER LINKS
-    // ===========================================
+    // Clean Twitter
     let twitter = extractString(result.twitter_thread);
-    twitter = twitter.replace(/(https?:\/\/[^\s]+)/g, ''); // Remove raw URLs from Twitter text
+    twitter = twitter.replace(/(https?:\/\/[^\s]+)/g, '');
     if (affiliateLink) {
-      twitter += `\n\n✅ Click Here to Check the Best Deal → ${affiliateLink}`;
+      twitter += `\n\n✅ Click Here → ${affiliateLink}`;
     }
 
-    // 5. Final Data
+    // 4. Final Data
     const finalData = {
       trending_hook: extractString(result.trending_hook),
       google_article: article,
@@ -254,7 +249,7 @@ async function processCampaign(id) {
       meta_description: extractString(result.meta_description),
     };
 
-    // 6. Save to DB
+    // 5. Save
     await Campaign.findByIdAndUpdate(id, {
       trending_hook: finalData.trending_hook,
       google_article: finalData.google_article,
@@ -267,16 +262,16 @@ async function processCampaign(id) {
       status: 'completed'
     });
 
-    // 7. Telegram Alert
+    // 6. Telegram
     await sendToMobile(`
-🚀 <b>${campaign.product_name}</b> V4.2 Ready!
+🚀 <b>${campaign.product_name}</b> V4.3 Ready!
 
 🔥 <b>Hook:</b> ${finalData.trending_hook}
 
-🖼️ <b>Image:</b> HD Quality Injected
-🔗 <b>Link:</b> Clean "Click Here" Added
+🖼️ <b>Image:</b> HD (Pixabay)
+🔗 <b>Link:</b> Clean CTA Added
 
-📥 Dashboard se download karein.
+📥 Download from Dashboard.
     `);
 
     console.log(`✅ Campaign ${id} complete!`);
@@ -321,4 +316,4 @@ app.get('/api/download/:id', async (req, res) => {
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.2 running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.3 running on port ${PORT}`));
