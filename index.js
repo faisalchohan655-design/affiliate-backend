@@ -8,12 +8,11 @@ app.use(cors());
 app.use(express.json());
 
 // =============================================
-// 📦 MONGO DB CONNECTION
+// 📦 MONGO DB
 // =============================================
 const MONGO_URI = process.env.MONGO_URL || process.env.DATABASE_URL;
-
 if (!MONGO_URI) {
-  console.error('❌ FATAL: MONGO_URL or DATABASE_URL is MISSING!');
+  console.error('❌ FATAL: MONGO_URL is MISSING!');
   process.exit(1);
 }
 
@@ -21,7 +20,7 @@ const connectDB = async (retries = 5, delay = 3000) => {
   for (let i = 0; i < retries; i++) {
     try {
       await mongoose.connect(MONGO_URI, { serverSelectionTimeoutMS: 5000 });
-      console.log('✅ MongoDB Connected Successfully!');
+      console.log('✅ MongoDB Connected');
       return;
     } catch (err) {
       console.log(`⚠️ DB attempt ${i+1} failed. Retrying...`);
@@ -33,12 +32,13 @@ const connectDB = async (retries = 5, delay = 3000) => {
 connectDB();
 
 // =============================================
-// 📝 MONGO SCHEMA (Added: affiliate_link)
+// 📝 SCHEMA
 // =============================================
 const campaignSchema = new mongoose.Schema({
-  product_name: { type: String, required: true },
+  product_name: String,
   country: { type: String, default: 'us' },
-  affiliate_link: { type: String, default: '' }, // ✅ NEW FIELD
+  affiliate_link: { type: String, default: '' },
+  image_url: { type: String, default: '' },
   status: { type: String, default: 'pending' },
   google_article: String,
   twitter_thread: String,
@@ -53,32 +53,43 @@ const campaignSchema = new mongoose.Schema({
 
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
-// ========== TELEGRAM SETUP ==========
-const TELEGRAM_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
-const TELEGRAM_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
-
-async function sendToMobile(text) {
-  if (!TELEGRAM_TOKEN || !TELEGRAM_CHAT_ID) return;
+// =============================================
+// 🖼️ OKSLOP IMAGE FETCHER (AI-Generated Unique Pics)
+// =============================================
+async function fetchProductImage(productName) {
   try {
-    await axios.post(`https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage`, {
-      chat_id: TELEGRAM_CHAT_ID,
-      text: text.substring(0, 4096),
-      parse_mode: 'HTML'
+    // OKSLOP API call (drop-in replacement for Unsplash)
+    const res = await axios.get('https://okslop.com/api/v1/search/photos', {
+      params: {
+        query: `${productName} software app`,
+        per_page: 1,
+        client_id: process.env.OKSLOP_API_KEY, // ✅ Yahan apni key lagegi
+      },
+      timeout: 5000,
     });
-  } catch (e) { console.log('Telegram error:', e.message); }
+    
+    if (res.data.results && res.data.results.length > 0) {
+      // Return the regular size image URL
+      return res.data.results[0].urls.regular;
+    }
+    // Agar OKSLOP mein image nahi milti toh fallback
+    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
+  } catch (e) {
+    console.log('⚠️ OKSLOP fallback used (picsum)');
+    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
+  }
 }
 
 // =============================================
-// 🚀 GROQ API CALL (Direct Axios)
+// 🤖 GROQ SETUP (Direct Axios)
 // =============================================
-async function callGroq(messages, model = 'llama-3.1-8b-instant') {
+async function callGroq(messages) {
   const url = 'https://api.groq.com/openai/v1/chat/completions';
-  
   const response = await axios.post(url, {
     messages: messages,
-    model: model,
+    model: 'llama-3.1-8b-instant',
     response_format: { type: "json_object" },
-    temperature: 0.7,
+    temperature: 0.75,
   }, {
     headers: {
       'Authorization': `Bearer ${process.env.GROQ_API_KEY}`,
@@ -86,49 +97,64 @@ async function callGroq(messages, model = 'llama-3.1-8b-instant') {
     },
     timeout: 60000,
   });
-
   return response.data;
 }
 
-async function callGroqWithRetry(messages, model = 'llama-3.1-8b-instant', maxRetries = 3) {
+async function callGroqWithRetry(messages, maxRetries = 3) {
   for (let i = 0; i < maxRetries; i++) {
-    try {
-      return await callGroq(messages, model);
-    } catch (error) {
-      console.log(`⚠️ Groq attempt ${i+1} failed: ${error.message}`);
-      if (i === maxRetries - 1) throw error;
+    try { return await callGroq(messages); } 
+    catch (e) {
+      console.log(`⚠️ Groq attempt ${i+1} failed. Retrying...`);
+      if (i === maxRetries - 1) throw e;
       await new Promise(res => setTimeout(res, 3000));
     }
   }
 }
 
 // =============================================
-// 📥 STRING EXTRACTOR
+// 📥 HELPER: Extract String (Fix for Object errors)
 // =============================================
-function extractStringContent(value) {
+function extractString(value) {
   if (typeof value === 'string') return value;
   if (typeof value === 'object' && value !== null) {
     if (value.content) return value.content;
+    if (value.text) return value.text;
     if (value.article) return value.article;
-    if (value.body) return value.body;
     return JSON.stringify(value);
   }
   return String(value || '');
 }
 
 // =============================================
-// ⚙️ THE MAIN AD-KILLER WORKER (WITH AFFILIATE LINK)
+// 📨 TELEGRAM
+// =============================================
+async function sendToMobile(text) {
+  if (!process.env.TELEGRAM_BOT_TOKEN || !process.env.TELEGRAM_CHAT_ID) return;
+  try {
+    await axios.post(`https://api.telegram.org/bot${process.env.TELEGRAM_BOT_TOKEN}/sendMessage`, {
+      chat_id: process.env.TELEGRAM_CHAT_ID,
+      text: text.substring(0, 4096),
+      parse_mode: 'HTML'
+    });
+  } catch (e) { console.log('Telegram error:', e.message); }
+}
+
+// =============================================
+// ⚙️ MAIN ENGINE (V4.0 - OKSLOP + SOCIAL DOMINATOR)
 // =============================================
 async function processCampaign(id) {
   try {
     await Campaign.findByIdAndUpdate(id, { status: 'processing' });
     const campaign = await Campaign.findById(id);
-    if (!campaign) throw new Error('Campaign not found');
+    if (!campaign) throw new Error('Not found');
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
-    const affiliateLink = campaign.affiliate_link || '';
 
-    // STEP 1: SERPAPI
+    // 1. Fetch AI-Generated Product Image via OKSLOP
+    const imageUrl = await fetchProductImage(campaign.product_name);
+    await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
+
+    // 2. SERPAPI Data
     const serpRes = await axios.get('https://serpapi.com/search.json', {
       params: {
         q: `best ${campaign.product_name} review 2026`,
@@ -143,61 +169,59 @@ async function processCampaign(id) {
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
 
-    // STEP 2: TRENDING HOOK
-    const hookResponse = await callGroqWithRetry([
-      { role: 'system', content: 'Return ONLY valid JSON. {"hook": "..."}' },
-      { role: 'user', content: `Based on: ${JSON.stringify(peopleAlsoAsk)}. What is the biggest complaint about ${campaign.product_name}? Write a 1-line hook.` }
-    ]);
-    const trendingHook = JSON.parse(hookResponse.choices[0].message.content).hook;
-
-    // STEP 3: MEGA CONTENT (With Affiliate Link Instruction)
+    // 3. AI: Generate Hook + Full Content (V4.0 Advanced Prompt)
     const aiResponse = await callGroqWithRetry([
-      { role: 'system', content: `Return ONLY valid JSON with EXACT keys:
-        - "google_article": (HTML string)
-        - "twitter_thread": (string)
-        - "linkedin_post": (string)
-        - "reddit_post": (string)
-        - "reels_script": (string)
-        - "meta_title": (string, max 60 chars)
-        - "meta_description": (string, max 160 chars)
-        All values must be strings.` },
-      { role: 'user', content: `
+      { 
+        role: 'system', 
+        content: `You are a rebellious, brutally honest consumer advocate. You call out marketing fluff. 
+        Tone: Bold, punchy, short sentences. Use emojis like ⚠️, 🔥, ❌, ✅. 
+        Return ONLY valid JSON. Keys: trending_hook, google_article, twitter_thread, linkedin_post, reddit_post, reels_script, meta_title, meta_description.
+        
+        CRITICAL RULES:
+        1. For the AFFILIATE LINK (${campaign.affiliate_link || 'No link'}): NEVER show the raw URL. Always embed it in HTML anchor text like <a href="LINK" target="_blank">Click Here to Check Deal</a> or "Check Official Price Here".
+        2. GOOGLE_ARTICLE: Must include the product image at the top using this exact HTML: <img src="${imageUrl}" alt="${campaign.product_name} Review" style="width:100%; max-width:800px; height:auto; border-radius:12px; margin:20px 0;" />. Include a <h2>Comparison Table</h2> with proper HTML table structure.
+        3. SOCIAL MEDIA (Twitter, LinkedIn): Start with a shocking hook. Engage the reader. Embed the link naturally as "Click Here".
+        ` 
+      },
+      { 
+        role: 'user', 
+        content: `
         Product: ${campaign.product_name}
-        Hook: "${trendingHook}"
         Competitor Data: ${snippets.substring(0, 3000)}
-        Affiliate Link (Embed this naturally in all formats): ${affiliateLink || 'No affiliate link provided'}
+        People Also Ask: ${JSON.stringify(peopleAlsoAsk)}
+        Affiliate Link: ${campaign.affiliate_link || 'No link'}
+        Image HTML (to place in google_article): <img src="${imageUrl}" alt="${campaign.product_name}" style="width:100%; border-radius:12px;" />
 
-        Instructions for the affiliate link:
-        - If a link is provided, embed it naturally in the google_article (as a clickable HTML link), in the twitter_thread (as a call-to-action), in linkedin_post, and in reels_script.
-        - Make it fit the context, e.g., "Grab your exclusive deal here [link]" or "Check out the official website [link]".
-        - If no link is provided, just use generic "visit official website" text.
-
-        Output Format:
-        1. google_article: 1200-word HTML article. Include <h2> "Why Ads Lie".
-        2. twitter_thread: 15 tweets (1/15 to 15/15).
-        3. linkedin_post: 300-word professional post.
-        4. reddit_post: "I tested ${campaign.product_name} for 30 days".
-        5. reels_script: 60-second script (Scene 1-5).
-        6. meta_title: Under 60 chars.
-        7. meta_description: Under 160 chars.
-      `}
-    ], 'llama-3.1-8b-instant');
+        Generate STRONG social content:
+        1. trending_hook: A 1-line warning/hook (e.g., "⚠️ STOP! Don't buy ${campaign.product_name} before reading this").
+        2. google_article: 1500-word detailed review. Include the image at the start. Add <h2>Comparison Table</h2>.
+        3. twitter_thread: 15 tweets. Tweet 1 must be the hook. Tweet 15 must have the "Click Here" call-to-action.
+        4. linkedin_post: 400 words. Start with a professional story/hook. End with a question to boost comments.
+        5. reddit_post: "I tested ${campaign.product_name} for 30 days (Honest Review)". Write casually, like a normal Redditor. Include TL;DR.
+        6. reels_script: 60-second video script. Scene 1: Hook, Scene 5: "Click Here" CTA.
+        7. meta_title: Under 60 chars (include hook).
+        8. meta_description: Under 160 chars.
+        `
+      }
+    ]);
 
     const result = JSON.parse(aiResponse.choices[0].message.content);
 
-    // STEP 4: Extract Strings
+    // 4. Extract all fields safely
     const finalData = {
-      google_article: extractStringContent(result.google_article),
-      twitter_thread: extractStringContent(result.twitter_thread),
-      linkedin_post: extractStringContent(result.linkedin_post),
-      reddit_post: extractStringContent(result.reddit_post),
-      reels_script: extractStringContent(result.reels_script),
-      meta_title: extractStringContent(result.meta_title),
-      meta_description: extractStringContent(result.meta_description),
+      trending_hook: extractString(result.trending_hook),
+      google_article: extractString(result.google_article),
+      twitter_thread: extractString(result.twitter_thread),
+      linkedin_post: extractString(result.linkedin_post),
+      reddit_post: extractString(result.reddit_post),
+      reels_script: extractString(result.reels_script),
+      meta_title: extractString(result.meta_title),
+      meta_description: extractString(result.meta_description),
     };
 
-    // STEP 5: Save
+    // 5. Save to DB
     await Campaign.findByIdAndUpdate(id, {
+      trending_hook: finalData.trending_hook,
       google_article: finalData.google_article,
       twitter_thread: finalData.twitter_thread,
       linkedin_post: finalData.linkedin_post,
@@ -205,20 +229,19 @@ async function processCampaign(id) {
       reels_script: finalData.reels_script,
       meta_title: finalData.meta_title,
       meta_description: finalData.meta_description,
-      trending_hook: trendingHook,
       status: 'completed'
     });
 
-    // STEP 6: Telegram
+    // 6. Telegram Alert
     await sendToMobile(`
-🚀 <b>${campaign.product_name}</b> Ready!
+🚀 <b>${campaign.product_name}</b> V4.0 Ready!
 
-🔥 <b>Hook:</b> ${trendingHook}
+🔥 <b>Hook:</b> ${finalData.trending_hook}
 
 🐦 <b>Twitter Start:</b>
 ${finalData.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 
-🔗 <b>Affiliate Link:</b> ${affiliateLink || 'Not provided'}
+🖼️ <b>AI Image Downloaded via OKSLOP:</b> ✅
 
 📥 Dashboard se download karein.
     `);
@@ -235,40 +258,34 @@ ${finalData.twitter_thread.split('\n').slice(0, 3).join('\n')}...
 }
 
 // =============================================
-// 🌐 EXPRESS ROUTES
+// 🌐 ROUTES
 // =============================================
 app.post('/api/start', async (req, res) => {
-  const { product, country, affiliateLink } = req.body; // ✅ Added affiliateLink
-  if (!product) return res.status(400).json({ error: 'Product name required' });
+  const { product, country, affiliateLink } = req.body;
+  if (!product) return res.status(400).json({ error: 'Product required' });
   
   const newCampaign = new Campaign({
     product_name: product,
     country: country || 'us',
-    affiliate_link: affiliateLink || '', // ✅ Save to DB
+    affiliate_link: affiliateLink || '',
     status: 'pending'
   });
   const saved = await newCampaign.save();
   processCampaign(saved._id).catch(console.error);
-  res.json({ success: true, id: saved._id, message: 'Started! Check in 2 mins.' });
+  res.json({ success: true, id: saved._id });
 });
 
 app.get('/api/status/:id', async (req, res) => {
-  try {
-    const data = await Campaign.findById(req.params.id);
-    if (!data) return res.status(404).json({ error: 'Not found' });
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  const data = await Campaign.findById(req.params.id);
+  res.json(data);
 });
 
 app.get('/api/download/:id', async (req, res) => {
-  try {
-    const data = await Campaign.findById(req.params.id);
-    if (!data) return res.status(404).json({ error: 'Not found' });
-    res.json(data);
-  } catch (e) { res.status(500).json({ error: e.message }); }
+  const data = await Campaign.findById(req.params.id);
+  res.json(data);
 });
 
 app.get('/health', (req, res) => res.send('OK'));
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`🔥 Ad-Killer (Groq Axios) running on port ${PORT}`));
+app.listen(PORT, () => console.log(`🔥 Ad-Killer V4.0 (OKSLOP) running on port ${PORT}`));
