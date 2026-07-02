@@ -153,17 +153,9 @@ async function processCampaign(id) {
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
 
-    // 2. SERPAPI Data
-    const serpRes = await axios.get('https://serpapi.com/search.json', {
-      params: {
-        q: `best ${campaign.product_name} review 2026`,
-        gl: campaign.country || 'us',
-        api_key: process.env.SERPAPI_KEY,
-        num: 5,
-        include_people_also_ask: true
-      },
-      timeout: 15000
-    });
+    // 2. SERPAPI Data - ✅ FIXED: Manual URL build (No params object)
+    const serpUrl = `https://serpapi.com/search.json?key=${process.env.SERPAPI_KEY}&q=${encodeURIComponent(`best ${campaign.product_name} review 2026`)}&gl=${campaign.country || 'us'}&num=5&include_people_also_ask=true`;
+    const serpRes = await axios.get(serpUrl, { timeout: 15000 });
 
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
@@ -239,7 +231,7 @@ async function processCampaign(id) {
       }
     ]);
 
-    // ✅ FIX: Add error handling if AI response is invalid
+    // ✅ Error handling if AI response is invalid
     if (!aiResponse || !aiResponse.choices || !aiResponse.choices[0] || !aiResponse.choices[0].message) {
       throw new Error('Invalid AI response structure. Check Groq API key or model availability.');
     }
