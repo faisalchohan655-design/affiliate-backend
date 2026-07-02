@@ -54,14 +54,43 @@ const campaignSchema = new mongoose.Schema({
 const Campaign = mongoose.model('Campaign', campaignSchema);
 
 // =============================================
-// 🖼️ PIXABAY IMAGE FETCHER
+// 🖼️ HYBRID IMAGE FETCHER (OKSLOP + Pixabay + Picsum)
 // =============================================
 async function fetchProductImage(productName) {
+  // =============================================
+  // 1. TRY OKSLOP FIRST (AI Generated - Most Relevant)
+  // =============================================
   try {
+    console.log(`🖼️ Trying OKSLOP for: ${productName}`);
+    const okslopRes = await axios.get('https://okslop.com/api/v1/search/photos', {
+      params: {
+        query: `${productName} software application dashboard interface`,
+        per_page: 1,
+        client_id: process.env.OKSLOP_API_KEY,
+      },
+      timeout: 5000,
+    });
+    
+    if (okslopRes.data?.results?.length > 0) {
+      const imgUrl = okslopRes.data.results[0].urls?.regular || okslopRes.data.results[0].url;
+      if (imgUrl) {
+        console.log('✅ OKSLOP image found!');
+        return imgUrl;
+      }
+    }
+  } catch (e) {
+    console.log('⚠️ OKSLOP failed, falling back to Pixabay...');
+  }
+
+  // =============================================
+  // 2. FALLBACK TO PIXABAY (Stock Photos)
+  // =============================================
+  try {
+    console.log(`🖼️ Trying Pixabay for: ${productName}`);
     const res = await axios.get('https://pixabay.com/api/', {
       params: {
         key: process.env.PIXABAY_API_KEY,
-        q: `${productName} app software`,
+        q: `${productName} app technology business`,
         image_type: 'photo',
         per_page: 3,
         min_width: 800,
@@ -69,14 +98,21 @@ async function fetchProductImage(productName) {
       },
       timeout: 8000,
     });
+    
     if (res.data.hits && res.data.hits.length > 0) {
-      return res.data.hits[0].largeImageURL || res.data.hits[0].webformatURL;
+      const imgUrl = res.data.hits[0].largeImageURL || res.data.hits[0].webformatURL;
+      console.log('✅ Pixabay image found!');
+      return imgUrl;
     }
-    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
   } catch (e) {
-    console.log('⚠️ Pixabay fallback used');
-    return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
+    console.log('⚠️ Pixabay failed, using fallback...');
   }
+
+  // =============================================
+  // 3. ULTIMATE FALLBACK (Product-specific seed)
+  // =============================================
+  console.log('⚠️ Using Picsum fallback (unique per product)');
+  return `https://picsum.photos/seed/${encodeURIComponent(productName)}/800/400`;
 }
 
 // =============================================
@@ -159,11 +195,11 @@ async function processCampaign(id) {
 
     console.log(`🔄 Killing ads for: ${campaign.product_name}`);
 
-    // 1. Fetch Image
+    // 1. Fetch Image - HYBRID (OKSLOP + Pixabay)
     console.log('📸 Fetching image...');
     const imageUrl = await fetchProductImage(campaign.product_name);
     await Campaign.findByIdAndUpdate(id, { image_url: imageUrl });
-    console.log('✅ Image fetched');
+    console.log('✅ Image fetched:', imageUrl.substring(0, 80) + '...');
 
     // 2. SERPAPI Data
     console.log('🔍 Fetching SERPAPI data...');
@@ -173,37 +209,49 @@ async function processCampaign(id) {
 
     const peopleAlsoAsk = serpRes.data.people_also_ask || [];
     const snippets = serpRes.data.organic_results?.map(r => r.snippet).join(' ') || '';
-    console.log(`📊 Found ${snippets.length} chars`);
+    console.log(`📊 Found ${snippets.length} chars of competitor data`);
 
-    // 3. AI Content - COMPACT PROMPT
-    console.log('🤖 Generating AI content...');
+    // 3. AI Content - ULTIMATE SEO + UNIQUENESS ENGINE
+    console.log('🤖 Generating AI content (2500+ words)...');
     const aiResponse = await callGroqWithRetry([
       { 
         role: 'system', 
-        content: `You are an SEO journalist. Write 2500+ word reviews. No emojis. Include H1, H2, H3, comparison table, FAQ (3+ Qs). Unique structure each time. Return valid JSON.`
+        content: `You are a world-class SEO journalist and consumer advocate. 
+        
+        YOUR MANDATE:
+        - Write 2500+ words of deeply researched, brutally honest content.
+        - EVERY article must have a COMPLETELY DIFFERENT structure. Never repeat the same H2/H3 pattern twice.
+        - SEO BASICS ARE FIXED: Always include proper H1, H2, H3 hierarchy, meta title, meta description, and one comparison table.
+        - ZERO EMOJIS in google_article. Professional, authoritative tone.`
       },
       { 
         role: 'user', 
         content: `
-        Product: ${campaign.product_name}
-        Data: ${snippets.substring(0, 2000)}
-        Questions: ${JSON.stringify(peopleAlsoAsk)}
-        Affiliate Link: ${campaign.affiliate_link || 'None'}
+        PRODUCT: ${campaign.product_name}
+        COMPETITOR DATA: ${snippets.substring(0, 2500)}
+        USER QUESTIONS: ${JSON.stringify(peopleAlsoAsk)}
+        AFFILIATE LINK: ${campaign.affiliate_link || 'No link provided'}
 
-        Generate JSON:
-        1. trending_hook (string)
-        2. google_article (HTML string, start with <h1>)
-        3. twitter_thread (string, 15 tweets)
-        4. linkedin_post (string, 400 words)
-        5. reddit_post (string, 500 words)
-        6. reels_script (string)
-        7. meta_title (string, 50-60 chars)
-        8. meta_description (string, 150-160 chars)
+        Generate a UNIQUE 2500+ word SEO article.
+        Start with <h1>.
+        Include: comparison table, FAQ section (3+ questions), meta title (50-60 chars), meta description (150-160 chars).
+        If affiliate link provided, embed it once as: <a href="LINK" target="_blank">Click Here to Grab the Deal</a>
+
+        OUTPUT (JSON):
+        1. trending_hook
+        2. google_article (HTML string)
+        3. twitter_thread (15 tweets)
+        4. linkedin_post (400 words)
+        5. reddit_post (500 words)
+        6. reels_script (60-sec)
+        7. meta_title
+        8. meta_description
         `
       }
     ]);
 
-    if (!aiResponse?.choices?.[0]?.message) {
+    // ✅ Error handling if AI response is invalid
+    if (!aiResponse || !aiResponse.choices || !aiResponse.choices[0] || !aiResponse.choices[0].message) {
       throw new Error('Invalid AI response. Check Groq API key.');
     }
 
@@ -211,19 +259,22 @@ async function processCampaign(id) {
     console.log('✅ AI content generated');
 
     // ===========================================
-    // CLEANUP: Image + Link
+    // FORCEFUL CLEANUP: Image + Link
     // ===========================================
     let article = extractString(result.google_article);
     if (!article || article.length < 50) {
       article = `<h1>${campaign.product_name} Review</h1><p>Detailed review...</p>`;
     }
     
+    // Remove all old images and links
     article = article.replace(/<img[^>]*>/gi, '');
     article = article.replace(/<a\s+[^>]*>.*?<\/a>/gi, '');
 
+    // Inject Image with referrerpolicy
     const imageHtml = `<img src="${imageUrl}" alt="${campaign.product_name} Review" style="width:100%; max-width:100%; height:auto; border-radius:12px; margin:20px 0;" referrerpolicy="no-referrer" />`;
     article = imageHtml + article;
 
+    // Add clean CTA button
     const affiliateLink = campaign.affiliate_link || '';
     if (affiliateLink) {
       const cta = `
@@ -236,12 +287,14 @@ async function processCampaign(id) {
       article += cta;
     }
 
+    // Clean Twitter
     let twitter = extractString(result.twitter_thread);
     twitter = twitter.replace(/(https?:\/\/[^\s]+)/g, '');
     if (affiliateLink) {
       twitter += `\n\n✅ Click Here → ${affiliateLink}`;
     }
 
+    // 4. Final Data
     const finalData = {
       trending_hook: extractString(result.trending_hook),
       google_article: article,
@@ -253,6 +306,7 @@ async function processCampaign(id) {
       meta_description: extractString(result.meta_description),
     };
 
+    // 5. Save
     await Campaign.findByIdAndUpdate(id, {
       trending_hook: finalData.trending_hook,
       google_article: finalData.google_article,
@@ -265,12 +319,14 @@ async function processCampaign(id) {
       status: 'completed'
     });
 
+    // 6. Telegram
     await sendToMobile(`
 🚀 <b>${campaign.product_name}</b> SEO Article Ready!
 
 🔥 <b>Hook:</b> ${finalData.trending_hook}
 
 📄 <b>Article Length:</b> 2500+ words
+🖼️ <b>Image:</b> AI-Generated/Stock
 🔗 <b>Link:</b> Clean CTA Added
 
 📥 Download from Dashboard.
